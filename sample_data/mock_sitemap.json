@@ -1,0 +1,49 @@
+{
+  "target_url": "http://localhost",
+  "crawl_timestamp": "2025-06-01T10:00:00Z",
+  "endpoints": [
+    {
+      "url": "http://localhost/vulnerabilities/sqli/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["id", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "http://localhost/vulnerabilities/sqli_blind/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["id", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "http://localhost/vulnerabilities/xss_r/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["name", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "http://localhost/vulnerabilities/xss_s/",
+      "method": "POST",
+      "form_action": "#",
+      "inputs": ["txtName", "mtxMessage", "btnSign"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "http://localhost/login.php",
+      "method": "POST",
+      "form_action": "login.php",
+      "inputs": ["username", "password", "Login"],
+      "cookies_needed": [],
+      "endpoint_type": "form"
+    }
+  ],
+  "total_pages": 12,
+  "total_forms": 8,
+  "total_api_endpoints": 0
+}
