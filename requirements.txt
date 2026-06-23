@@ -6,3 +6,4 @@ weasyprint==60.2
 markdown==3.5.1
 openai>=1.6.0
 python-dotenv==1.0.0
+lxml>=4.9.0

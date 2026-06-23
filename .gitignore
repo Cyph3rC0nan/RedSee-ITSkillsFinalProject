@@ -2,6 +2,11 @@ venv/
 __pycache__/
 *.pyc
 .env
-outputs/
+outputs/*.pdf
+outputs/*.json
+!outputs/.gitkeep
 *.pdf
 .DS_Store
+*.egg-info/
+dist/
+build/

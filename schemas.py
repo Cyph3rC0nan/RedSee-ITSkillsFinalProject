@@ -5,6 +5,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Optional
 import json
+import os
 
 
 @dataclass
@@ -63,6 +64,7 @@ class Sitemap:
         return asdict(self)
 
     def to_json(self, filepath: str):
+        os.makedirs(os.path.dirname(filepath), exist_ok=True) if os.path.dirname(filepath) else None
         with open(filepath, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
 
