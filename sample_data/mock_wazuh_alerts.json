@@ -1,0 +1,82 @@
+[
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:30:00Z",
+    "rule_id": "31103",
+    "description": "SQL injection attempt detected",
+    "severity_level": 12,
+    "src_ip": "192.168.1.100",
+    "target_url": "/vulnerabilities/sqli/?id=1'+OR+1%3D1--",
+    "raw_payload": "id=1' OR 1=1--"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:30:05Z",
+    "rule_id": "31103",
+    "description": "SQL injection attempt detected — UNION payload",
+    "severity_level": 12,
+    "src_ip": "192.168.1.100",
+    "target_url": "/vulnerabilities/sqli/?id=1'+UNION+SELECT+NULL--",
+    "raw_payload": "id=1' UNION SELECT NULL, NULL--"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:32:00Z",
+    "rule_id": "31105",
+    "description": "Cross-site scripting (XSS) attempt detected",
+    "severity_level": 10,
+    "src_ip": "192.168.1.100",
+    "target_url": "/vulnerabilities/xss_r/?name=<script>alert(1)</script>",
+    "raw_payload": "<script>alert(1)</script>"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:33:00Z",
+    "rule_id": "5712",
+    "description": "Multiple failed login attempts from same source",
+    "severity_level": 8,
+    "src_ip": "192.168.1.100",
+    "target_url": "/login.php",
+    "raw_payload": "username=admin&password=test123"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:33:30Z",
+    "rule_id": "5712",
+    "description": "Brute force attack — 50+ login attempts in 30 seconds",
+    "severity_level": 14,
+    "src_ip": "192.168.1.100",
+    "target_url": "/login.php",
+    "raw_payload": "username=admin&password=<bruteforce>"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:35:00Z",
+    "rule_id": "31110",
+    "description": "Directory traversal attempt detected",
+    "severity_level": 10,
+    "src_ip": "192.168.1.100",
+    "target_url": "/vulnerabilities/fi/?page=../../etc/passwd",
+    "raw_payload": "page=../../etc/passwd"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:36:00Z",
+    "rule_id": "100002",
+    "description": "Suspicious sequential API access — possible IDOR enumeration",
+    "severity_level": 6,
+    "src_ip": "192.168.1.100",
+    "target_url": "/api/Users/1,/api/Users/2,/api/Users/3",
+    "raw_payload": "Sequential user ID enumeration detected"
+  },
+  {
+    "source": "Wazuh",
+    "timestamp": "2025-06-01T14:38:00Z",
+    "rule_id": "31151",
+    "description": "Web application attack — command injection attempt",
+    "severity_level": 13,
+    "src_ip": "192.168.1.100",
+    "target_url": "/vulnerabilities/exec/?ip=;+cat+/etc/passwd",
+    "raw_payload": "ip=; cat /etc/passwd"
+  }
+]

