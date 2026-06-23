@@ -1,0 +1,105 @@
+{
+  "target_url": "https://YOUR_TARGET_DOMAIN",
+  "crawl_timestamp": "2025-06-01T14:00:00Z",
+  "total_pages": 15,
+  "total_forms": 8,
+  "total_api_endpoints": 3,
+  "endpoints": [
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/sqli/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["id", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/sqli_blind/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["id", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/xss_r/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["name", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/xss_s/",
+      "method": "POST",
+      "form_action": "#",
+      "inputs": ["txtName", "mtxMessage", "btnSign"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/brute/",
+      "method": "GET",
+      "form_action": "#",
+      "inputs": ["username", "password", "Login"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/exec/",
+      "method": "POST",
+      "form_action": "#",
+      "inputs": ["ip", "Submit"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/fi/",
+      "method": "GET",
+      "form_action": null,
+      "inputs": ["page"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "link"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/vulnerabilities/upload/",
+      "method": "POST",
+      "form_action": "#",
+      "inputs": ["uploaded", "Upload"],
+      "cookies_needed": ["PHPSESSID", "security"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "https://YOUR_TARGET_DOMAIN/login.php",
+      "method": "POST",
+      "form_action": "login.php",
+      "inputs": ["username", "password", "Login", "user_token"],
+      "cookies_needed": ["PHPSESSID"],
+      "endpoint_type": "form"
+    },
+    {
+      "url": "http://localhost:3000/rest/user/login",
+      "method": "POST",
+      "form_action": null,
+      "inputs": ["email", "password"],
+      "cookies_needed": [],
+      "endpoint_type": "api"
+    },
+    {
+      "url": "http://localhost:3000/api/Users/1",
+      "method": "GET",
+      "form_action": null,
+      "inputs": [],
+      "cookies_needed": ["token"],
+      "endpoint_type": "api"
+    },
+    {
+      "url": "http://localhost:3000/api/Products/1",
+      "method": "GET",
+      "form_action": null,
+      "inputs": [],
+      "cookies_needed": [],
+      "endpoint_type": "api"
+    }
+  ]
+}
