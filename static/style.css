@@ -1,0 +1,681 @@
+/* ============================================================
+   RedSee — Dark Cybersecurity Dashboard Stylesheet
+   ============================================================ */
+
+/* ─── CSS Variables ─────────────────────────────────────── */
+:root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-panel: #1c2128;
+    --border-color: #30363d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --accent-red: #f85149;
+    --accent-blue: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-yellow: #d29922;
+    --accent-orange: #e3851d;
+    --severity-critical: #f85149;
+    --severity-high: #e3851d;
+    --severity-medium: #d29922;
+    --severity-low: #3fb950;
+    --tab-active-red: #f85149;
+    --tab-active-blue: #58a6ff;
+}
+
+/* ─── Global Reset ──────────────────────────────────────── */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, "Noto Sans", sans-serif,
+        "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
+        "Noto Color Emoji";
+    line-height: 1.6;
+    min-height: 100vh;
+    padding-bottom: 3rem;
+}
+
+/* ─── Navbar ────────────────────────────────────────────── */
+.navbar {
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+.brand-icon {
+    font-size: 1.6rem;
+}
+
+.brand-name {
+    color: var(--text-primary);
+}
+
+.brand-see {
+    color: var(--accent-red);
+}
+
+.nav-tagline {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    flex: 1;
+}
+
+.nav-status {
+    color: var(--accent-green);
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.nav-status::before {
+    content: "●";
+    color: var(--accent-green);
+    font-size: 0.7rem;
+}
+
+/* ─── Tab Switcher ──────────────────────────────────────── */
+.tab-switcher {
+    display: flex;
+    flex-direction: row;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    padding: 0 2rem;
+}
+
+.tab-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    font-weight: 600;
+    padding: 0.85rem 1.5rem;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    font-family: inherit;
+}
+
+.tab-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.tab-btn.active {
+    color: var(--text-primary);
+}
+
+#tab-red.active {
+    border-bottom-color: var(--tab-active-red);
+    color: var(--tab-active-red);
+}
+
+#tab-blue.active {
+    border-bottom-color: var(--tab-active-blue);
+    color: var(--tab-active-blue);
+}
+
+/* ─── Tab Content ───────────────────────────────────────── */
+.tab-content {
+    padding: 1.5rem 2rem;
+    max-width: 1100px;
+    margin: 0 auto;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* ─── Panel ─────────────────────────────────────────────── */
+.panel {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+}
+
+.panel-title {
+    color: var(--text-primary);
+    font-size: 1.15rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+/* ─── Input Row ─────────────────────────────────────────── */
+.input-row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+/* ─── URL Input ─────────────────────────────────────────── */
+.url-input {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.65rem 0.85rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    flex-grow: 1;
+    font-family: inherit;
+    transition: border-color 0.2s ease;
+}
+
+.url-input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.7;
+}
+
+.url-input:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
+/* ─── Select Input ──────────────────────────────────────── */
+.select-input {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.65rem 0.85rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.2s ease;
+}
+
+.select-input:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
+/* ─── Input Hint ────────────────────────────────────────── */
+.input-hint {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 0.5rem;
+}
+
+/* ─── Buttons ───────────────────────────────────────────── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.65rem 1.25rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border: none;
+    font-family: inherit;
+    text-decoration: none;
+    transition: background 0.2s ease, opacity 0.2s ease;
+    white-space: nowrap;
+}
+
+.btn-red {
+    background: var(--accent-red);
+    color: #fff;
+}
+
+.btn-red:hover:not(:disabled) {
+    background: #d93a33;
+}
+
+.btn-blue {
+    background: var(--accent-blue);
+    color: #fff;
+}
+
+.btn-blue:hover:not(:disabled) {
+    background: #388bfd;
+}
+
+.btn-download {
+    background: var(--accent-green);
+    color: #fff;
+}
+
+.btn-download:hover {
+    background: #2ea043;
+}
+
+.btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* ─── Progress Bar ──────────────────────────────────────── */
+.progress-bar-container {
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    overflow: hidden;
+    height: 10px;
+    margin: 0.75rem 0;
+}
+
+.progress-bar {
+    background: var(--accent-red);
+    height: 100%;
+    width: 0%;
+    border-radius: 6px;
+    transition: width 0.5s ease;
+}
+
+/* ─── Status Row ────────────────────────────────────────── */
+.status-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.4rem;
+}
+
+.status-label {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    min-width: 65px;
+}
+
+.status-value {
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+/* ─── Findings Counter ──────────────────────────────────── */
+.findings-counter {
+    color: var(--accent-red);
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin-top: 0.5rem;
+}
+
+/* ─── Findings Cards ────────────────────────────────────── */
+.finding-card {
+    background: var(--bg-secondary);
+    border-left: 4px solid var(--border-color);
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.65rem;
+    border-radius: 0 6px 6px 0;
+}
+
+.finding-card.severity-critical {
+    border-left-color: var(--severity-critical);
+}
+
+.finding-card.severity-high {
+    border-left-color: var(--severity-high);
+}
+
+.finding-card.severity-medium {
+    border-left-color: var(--severity-medium);
+}
+
+.finding-card.severity-low {
+    border-left-color: var(--severity-low);
+}
+
+.finding-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 0.2rem;
+}
+
+.finding-location {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-bottom: 0.3rem;
+}
+
+.finding-detail {
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    margin-bottom: 0.25rem;
+}
+
+.finding-evidence {
+    background: var(--bg-primary);
+    color: var(--accent-red);
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+        Courier, monospace;
+    font-size: 0.78rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    margin-top: 0.4rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* ─── Severity Badge ────────────────────────────────────── */
+.severity-badge {
+    display: inline-block;
+    font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+}
+
+.severity-badge.severity-critical {
+    background: var(--severity-critical);
+    color: #fff;
+}
+
+.severity-badge.severity-high {
+    background: var(--severity-high);
+    color: #fff;
+}
+
+.severity-badge.severity-medium {
+    background: var(--severity-medium);
+    color: #0d1117;
+}
+
+.severity-badge.severity-low {
+    background: var(--severity-low);
+    color: #0d1117;
+}
+
+/* ─── Blue Section ──────────────────────────────────────── */
+.blue-section {
+    margin-top: 1rem;
+}
+
+.section-title {
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 0.65rem;
+}
+
+/* ─── Divider ───────────────────────────────────────────── */
+.divider {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin: 1.25rem 0;
+    position: relative;
+}
+
+.divider::before,
+.divider::after {
+    content: "";
+    display: inline-block;
+    width: 30%;
+    height: 1px;
+    background: var(--border-color);
+    vertical-align: middle;
+    margin: 0 0.75rem;
+}
+
+/* ─── Drop Zone ─────────────────────────────────────────── */
+.drop-zone {
+    background: var(--bg-secondary);
+    border: 2px dashed var(--border-color);
+    border-radius: 8px;
+    padding: 1.75rem 1.5rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+.drop-zone:hover {
+    border-color: var(--text-secondary);
+}
+
+.drop-zone.drag-active {
+    border-color: var(--accent-blue);
+    background: rgba(88, 166, 255, 0.06);
+}
+
+.drop-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.drop-text {
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    font-weight: 500;
+}
+
+.drop-hint {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    margin-top: 0.3rem;
+}
+
+.drop-filename {
+    color: var(--accent-green);
+    font-weight: 600;
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+}
+
+/* ─── Table ─────────────────────────────────────────────── */
+.table-container {
+    overflow-x: auto;
+}
+
+.events-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.events-table thead {
+    background: var(--bg-secondary);
+}
+
+.events-table th {
+    color: var(--text-secondary);
+    text-align: left;
+    padding: 0.7rem 0.75rem;
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.events-table tbody td {
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+
+.events-table tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.015);
+}
+
+.events-table tbody tr:nth-child(odd) {
+    background: transparent;
+}
+
+.events-table tbody tr:hover {
+    background: rgba(88, 166, 255, 0.06);
+}
+
+.events-table tbody tr.severity-highlight {
+    border-left: 3px solid var(--accent-red);
+}
+
+/* ─── Badge ─────────────────────────────────────────────── */
+.badge {
+    background: var(--accent-blue);
+    color: #fff;
+    border-radius: 12px;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+}
+
+/* ─── Action Row ────────────────────────────────────────── */
+.action-row {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* ─── Footer ────────────────────────────────────────────── */
+.footer {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    padding: 1.5rem 2rem;
+    margin-top: 2rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.footer-credits {
+    font-size: 0.72rem;
+    margin-top: 0.35rem;
+    color: var(--text-secondary);
+    opacity: 0.8;
+}
+
+/* ─── Toast ─────────────────────────────────────────────── */
+.toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    padding: 0.8rem 1.25rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #fff;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    max-width: 420px;
+    transform: translateY(0);
+}
+
+.toast-info {
+    background: var(--accent-blue);
+}
+
+.toast-success {
+    background: var(--accent-green);
+}
+
+.toast-error {
+    background: var(--accent-red);
+}
+
+.toast.hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(12px);
+}
+
+/* ─── Loading Spinner ───────────────────────────────────── */
+.loading-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2.5px solid var(--border-color);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 0.5rem;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ─── Responsive ────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .navbar {
+        flex-direction: column;
+        align-items: flex-start;
+        padding: 1rem;
+    }
+
+    .tab-switcher {
+        padding: 0 1rem;
+    }
+
+    .tab-content {
+        padding: 1rem;
+    }
+
+    .panel {
+        padding: 1rem;
+    }
+
+    .input-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .input-row .btn {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .action-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .action-row .btn {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .tab-btn {
+        padding: 0.75rem 1rem;
+        font-size: 0.85rem;
+    }
+
+    .navbar {
+        gap: 0.5rem;
+    }
+}

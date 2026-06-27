@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "_time": "2025-06-01T14:30:00",
+      "sourcetype": "web_attack",
+      "src_ip": "192.168.1.100",
+      "uri": "/vulnerabilities/sqli/?id=1%27+OR+1%3D1--",
+      "status": "200",
+      "description": "SQL injection attempt",
+      "signature": "SQLi-001",
+      "signature_id": "10001",
+      "severity": "high",
+      "_raw": "192.168.1.100 - - [01/Jun/2025:14:30:00] \"GET /vulnerabilities/sqli/?id=1' OR 1=1-- HTTP/1.1\" 200 4512"
+    },
+    {
+      "_time": "2025-06-01T14:32:00",
+      "sourcetype": "web_attack",
+      "src_ip": "192.168.1.100",
+      "uri": "/vulnerabilities/xss_r/?name=%3Cscript%3Ealert%281%29%3C%2Fscript%3E",
+      "status": "200",
+      "description": "XSS reflected attack attempt",
+      "signature": "XSS-Reflected-001",
+      "signature_id": "10002",
+      "severity": "high",
+      "_raw": "192.168.1.100 - - [01/Jun/2025:14:32:00] \"GET /vulnerabilities/xss_r/?name=<script>alert(1)</script> HTTP/1.1\" 200 1234"
+    },
+    {
+      "_time": "2025-06-01T14:34:00",
+      "sourcetype": "authentication",
+      "src_ip": "192.168.1.100",
+      "uri": "/login.php",
+      "status": "401",
+      "description": "Brute force authentication attack",
+      "signature": "BruteForce-Login",
+      "signature_id": "20001",
+      "severity": "critical",
+      "_raw": "FAILED LOGIN attempt for user admin from 192.168.1.100 - attempt 47 of 50"
+    },
+    {
+      "_time": "2025-06-01T14:35:00",
+      "sourcetype": "api_access",
+      "src_ip": "192.168.1.100",
+      "uri": "/api/Users/3",
+      "status": "200",
+      "description": "Unauthorized object reference — sequential ID enumeration",
+      "signature": "IDOR-API-Enum",
+      "signature_id": "30001",
+      "severity": "medium",
+      "_raw": "GET /api/Users/3 from 192.168.1.100 returned 200 OK — unauthorized access"
+    }
+  ]
+}
