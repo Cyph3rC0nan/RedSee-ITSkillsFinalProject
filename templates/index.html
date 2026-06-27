@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RedSee — Automated Pentest Platform</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- NAV -->
+    <nav class="navbar">
+        <div class="nav-brand">
+            <span class="brand-icon">🛡️</span>
+            <span class="brand-name">Red<span class="brand-see">See</span></span>
+        </div>
+        <div class="nav-tagline">Automated Pentest &amp; SIEM Analysis Platform</div>
+        <div class="nav-status" id="connection-status">● Ready</div>
+    </nav>
+
+    <!-- TAB SWITCHER -->
+    <div class="tab-switcher">
+        <button class="tab-btn active" id="tab-red" onclick="switchTab('red')">
+            🔴 Red Team Scan
+        </button>
+        <button class="tab-btn" id="tab-blue" onclick="switchTab('blue')">
+            🔵 Blue Team Logs
+        </button>
+    </div>
+
+    <!-- RED TEAM TAB -->
+    <div class="tab-content active" id="content-red">
+        <div class="panel">
+            <h2 class="panel-title">🎯 Target Configuration</h2>
+            <div class="input-row">
+                <input
+                    type="url"
+                    id="target-url"
+                    class="url-input"
+                    placeholder="https://target.example.com"
+                    autocomplete="off"
+                />
+                <button class="btn btn-red" id="scan-btn" onclick="startScan()">
+                    ▶ Start Scan
+                </button>
+            </div>
+            <div class="input-hint">
+                Enter the target URL. The scanner will crawl and test for SQLi, XSS, IDOR, and Broken Auth.
+            </div>
+        </div>
+
+        <!-- Progress Panel (hidden until scan starts) -->
+        <div class="panel hidden" id="progress-panel">
+            <h2 class="panel-title">⚡ Scan Progress</h2>
+            <div class="status-row">
+                <span class="status-label">Status:</span>
+                <span class="status-value" id="scan-status-text">Initializing...</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Module:</span>
+                <span class="status-value" id="current-module-text">—</span>
+            </div>
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="findings-counter">
+                <span id="findings-count">0</span> vulnerabilities found
+            </div>
+        </div>
+
+        <!-- Findings Panel (hidden until scan complete) -->
+        <div class="panel hidden" id="findings-panel">
+            <h2 class="panel-title">🔍 Vulnerability Findings</h2>
+            <div id="findings-list"></div>
+            <div class="action-row">
+                <button class="btn btn-red" id="gen-red-report-btn"
+                        onclick="generateRedReport()">
+                    📄 Generate Red Team Report
+                </button>
+                <a class="btn btn-download hidden" id="red-download-link"
+                   href="#" target="_blank">
+                    ⬇ Download PDF Report
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- BLUE TEAM TAB -->
+    <div class="tab-content hidden" id="content-blue">
+        <div class="panel">
+            <h2 class="panel-title">📡 SIEM Log Source</h2>
+
+            <!-- Wazuh Live Fetch -->
+            <div class="blue-section">
+                <h3 class="section-title">Option A — Live Wazuh API</h3>
+                <div class="input-row">
+                    <select id="wazuh-timeframe" class="select-input">
+                        <option value="15">Last 15 minutes</option>
+                        <option value="30" selected>Last 30 minutes</option>
+                        <option value="60">Last 1 hour</option>
+                        <option value="360">Last 6 hours</option>
+                        <option value="1440">Last 24 hours</option>
+                    </select>
+                    <button class="btn btn-blue" onclick="fetchWazuhAlerts()">
+                        📡 Fetch Wazuh Alerts
+                    </button>
+                </div>
+            </div>
+
+            <div class="divider">— OR —</div>
+
+            <!-- File Upload -->
+            <div class="blue-section">
+                <h3 class="section-title">Option B — Upload Log File</h3>
+                <div class="drop-zone" id="drop-zone"
+                     ondragover="handleDragOver(event)"
+                     ondrop="handleDrop(event)"
+                     onclick="document.getElementById('log-file').click()">
+                    <div class="drop-icon">📁</div>
+                    <div class="drop-text">
+                        Drag &amp; drop Wazuh/Splunk JSON here, or click to browse
+                    </div>
+                    <div class="drop-hint">Supported: Wazuh alerts JSON, Splunk export JSON/CSV</div>
+                    <div class="drop-filename hidden" id="selected-filename"></div>
+                </div>
+                <input type="file" id="log-file" accept=".json,.csv"
+                       style="display:none" onchange="onFileSelected(this)">
+                <div class="input-row" style="margin-top:12px">
+                    <button class="btn btn-blue" id="analyze-btn"
+                            onclick="analyzeLogs()" disabled>
+                        🔍 Analyze Logs
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Events Panel (hidden until logs parsed) -->
+        <div class="panel hidden" id="events-panel">
+            <h2 class="panel-title">📋 Parsed SIEM Events
+                <span class="badge" id="event-count-badge">0</span>
+            </h2>
+            <div class="table-container">
+                <table class="events-table" id="events-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Source</th>
+                            <th>Rule ID</th>
+                            <th>Severity</th>
+                            <th>Description</th>
+                            <th>Src IP</th>
+                            <th>Target</th>
+                        </tr>
+                    </thead>
+                    <tbody id="events-body"></tbody>
+                </table>
+            </div>
+            <div class="action-row">
+                <button class="btn btn-blue" onclick="generateBlueReport()">
+                    📄 Generate Blue Team Report
+                </button>
+                <a class="btn btn-download hidden" id="blue-download-link"
+                   href="#" target="_blank">
+                    ⬇ Download PDF Report
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <div>RedSee — IT Skills Final Project</div>
+        <div class="footer-credits">
+            Member 1: Report Engine | Member 2: Crawler |
+            Member 3: SQLi &amp; XSS | Member 4: IDOR, Auth, SIEM &amp; Frontend
+        </div>
+    </footer>
+
+    <!-- TOAST NOTIFICATION -->
+    <div class="toast hidden" id="toast"></div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

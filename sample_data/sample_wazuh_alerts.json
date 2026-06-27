@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2025-06-01T14:30:00Z",
+    "rule": {"id": "31103", "description": "SQL injection attempt detected", "level": 12},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/vulnerabilities/sqli/?id=1'+OR+1%3D1--"}
+  },
+  {
+    "timestamp": "2025-06-01T14:30:05Z",
+    "rule": {"id": "31103", "description": "SQL injection attempt — UNION payload", "level": 12},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/vulnerabilities/sqli/?id=1'+UNION+SELECT+NULL--"}
+  },
+  {
+    "timestamp": "2025-06-01T14:31:00Z",
+    "rule": {"id": "31103", "description": "SQL injection — time-based blind attempt", "level": 13},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/vulnerabilities/sqli_blind/?id=1'+AND+SLEEP(5)--"}
+  },
+  {
+    "timestamp": "2025-06-01T14:32:00Z",
+    "rule": {"id": "31105", "description": "XSS attempt detected", "level": 10},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/vulnerabilities/xss_r/?name=<script>alert(1)</script>"}
+  },
+  {
+    "timestamp": "2025-06-01T14:33:00Z",
+    "rule": {"id": "31105", "description": "Stored XSS attempt via form submission", "level": 11},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/vulnerabilities/xss_s/", "payload": "<img src=x onerror=alert(1)>"}
+  },
+  {
+    "timestamp": "2025-06-01T14:34:00Z",
+    "rule": {"id": "5712", "description": "Multiple authentication failures from same source", "level": 8},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/login.php"}
+  },
+  {
+    "timestamp": "2025-06-01T14:34:30Z",
+    "rule": {"id": "5720", "description": "Brute force attack — 50+ failed logins in 30s", "level": 14},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/login.php"}
+  },
+  {
+    "timestamp": "2025-06-01T14:35:00Z",
+    "rule": {"id": "100002", "description": "Suspicious sequential API access — possible IDOR", "level": 6},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/api/Users/1"}
+  },
+  {
+    "timestamp": "2025-06-01T14:35:30Z",
+    "rule": {"id": "100002", "description": "Continued sequential API enumeration", "level": 7},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/api/Users/2,/api/Users/3,/api/Users/4"}
+  },
+  {
+    "timestamp": "2025-06-01T14:36:00Z",
+    "rule": {"id": "31110", "description": "Directory traversal attempt detected", "level": 10},
+    "agent": {"name": "web-server-01"},
+    "data": {"srcip": "192.168.1.100", "url": "/vulnerabilities/fi/?page=../../etc/passwd"}
+  }
+]
