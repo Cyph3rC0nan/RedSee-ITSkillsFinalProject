@@ -10,19 +10,25 @@ Routes:
     POST /analyze-logs              → Upload + parse SIEM logs
     POST /fetch-wazuh-alerts        → Fetch live Wazuh alerts
     POST /generate-blue-report      → Generate blue team PDF
-    GET  /downloads/<filename>      → Serve generated PDFs
+    GET  /downloads/filename        → Serve generated PDFs
 
-Owner: Member 4
+Owner: Member 4 (PHASE 4 wiring by integration agent)
 """
 
 import os
 import json
 import uuid
 import threading
+import tempfile
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from dotenv import load_dotenv
+
+from integration import run_full_scan, get_scan_status, _scan_status
+from red_report import generate_red_report
+from blue_report import generate_blue_report
+from log_ingestor import ingest_log_file, fetch_wazuh_alerts
 
 load_dotenv()
 
@@ -66,8 +72,7 @@ def start_scan():
         "report_path": None,
         "error": None
     }
-
-    # ── PHASE 1 STUB: simulate scan in background thread ──
+    # Background thread calls integration.run_full_scan(); status updates pushed to integration._scan_status
     thread = threading.Thread(
         target=_run_scan_background,
         args=(scan_id, target_url),
@@ -83,60 +88,82 @@ def start_scan():
 def scan_status(scan_id):
     """
     Returns: {
-        "status": "crawling|testing_sqli|testing_xss|testing_idor|testing_auth|done|error",
+        "status": "crawling|testing_sqli|testing_xss|testing_idor|testing_auth|generating_report|done|error",
         "findings_count": 5,
         "current_module": "IDOR"
     }
+
+    Reads live status from integration._scan_status via get_scan_status().
     """
-    scan = scans.get(scan_id)
-    if not scan:
+    status_data = get_scan_status(scan_id)
+    if status_data.get("status") == "not_found":
         return jsonify({"error": "Scan not found"}), 404
 
     return jsonify({
-        "status": scan["status"],
-        "findings_count": scan["findings_count"],
-        "current_module": scan.get("current_module", ""),
-        "error": scan.get("error")
+        "status": status_data.get("status", "unknown"),
+        "findings_count": status_data.get("findings_count", 0),
+        "current_module": status_data.get("current_module", ""),
+        "report_path": status_data.get("report_path"),
+        "error": status_data.get("error")
     })
 
 
 # ─── ROUTE: Scan Findings ──────────────────────────────────
 @app.route("/scan/<scan_id>/findings")
 def scan_findings(scan_id):
-    """Returns: { "findings": [ ...Finding dicts... ] }"""
+    """Returns: { "findings": [ ...Finding dicts... ] }
+
+    Reads findings from outputs/findings_{scan_id}.json (saved by integration.run_full_scan).
+    Falls back to in-memory cache if file is missing.
+    """
+    findings_path = OUTPUTS_DIR / f"findings_{scan_id}.json"
+    if findings_path.exists():
+        with open(findings_path, "r", encoding="utf-8") as f:
+            findings = json.load(f)
+        return jsonify({"findings": findings})
+
+    # Fallback to in-memory cache (mock/test scans)
     scan = scans.get(scan_id)
-    if not scan:
-        return jsonify({"error": "Scan not found"}), 404
+    if scan is not None:
+        return jsonify({"findings": scan.get("findings", [])})
 
-    return jsonify({"findings": scan["findings"]})
-
+    return jsonify({"findings": [], "error": "Scan not found"}), 404
 
 # ─── ROUTE: Generate Red Team Report ──────────────────────
 @app.route("/scan/<scan_id>/report", methods=["POST"])
 def generate_report(scan_id):
-    """Returns: { "report_url": "/downloads/red_report_abc123.pdf" }"""
-    scan = scans.get(scan_id)
-    if not scan:
-        return jsonify({"error": "Scan not found"}), 404
-    if not scan["findings"]:
-        return jsonify({"error": "No findings to report"}), 400
+    """Returns: { "report_url": "/downloads/red_report_<scan_id>.pdf" }
+
+    Reads findings from outputs/findings_{scan_id}.json and calls
+    red_report.generate_red_report() to produce the PDF.
+    """
+    findings_path = OUTPUTS_DIR / f"findings_{scan_id}.json"
+    findings: list[dict] = []
+
+    if findings_path.exists():
+        with open(findings_path, "r", encoding="utf-8") as f:
+            findings = json.load(f)
+    else:
+        # Fallback to in-memory cache
+        scan = scans.get(scan_id)
+        if scan is not None:
+            findings = scan.get("findings", [])
+
+    if not findings:
+        return jsonify({"error": "No findings available for this scan"}), 400
 
     try:
-        # ── PHASE 1 STUB ── Replace in Phase 4:
-        # from red_report import generate_red_report
-        # report_path = generate_red_report(scan["findings"], scan_id=scan_id)
-        mock_filename = f"red_report_{scan_id}.pdf"
-        return jsonify({"report_url": f"/downloads/{mock_filename}",
-                        "note": "stub — real PDF generation in Phase 4"})
+        report_path = generate_red_report(findings, scan_id=scan_id)
+        filename = Path(report_path).name
+        return jsonify({"report_url": f"/downloads/{filename}"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 # ─── ROUTE: Upload & Analyze SIEM Logs ────────────────────
 @app.route("/analyze-logs", methods=["POST"])
 def analyze_logs():
     """
-    Accepts: multipart/form-data with 'file' OR JSON body
+    Accepts: multipart/form-data with 'file' OR JSON body with 'events'
     Returns: { "analysis_id": "xyz789", "event_count": 10, "events": [...] }
     """
     analysis_id = str(uuid.uuid4())[:8]
@@ -144,68 +171,99 @@ def analyze_logs():
     try:
         if "file" in request.files:
             file = request.files["file"]
-            temp_path = OUTPUTS_DIR / f"temp_logs_{analysis_id}.json"
-            file.save(str(temp_path))
+            if not file.filename:
+                return jsonify({"error": "Empty filename"}), 400
 
-            # ── PHASE 1 STUB ── Replace in Phase 4:
-            # from log_ingestor import ingest_log_file
-            # events = ingest_log_file(str(temp_path))
-            events = _mock_events()
-            temp_path.unlink(missing_ok=True)
+            # Save to temp file with safe suffix
+            suffix = Path(file.filename).suffix or ".json"
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix=f"redsee_logs_{analysis_id}_")
+            os.close(tmp_fd)
+            file.save(tmp_path)
+
+            try:
+                events = ingest_log_file(tmp_path)
+                events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
         elif request.is_json:
-            # ── PHASE 1 STUB ──
-            events = _mock_events()
+            # Allow inline events JSON (already normalized or raw)
+            payload = request.get_json() or {}
+            events_in = payload.get("events", [])
+            if not events_in:
+                return jsonify({"error": "No events data provided"}), 400
+
+            # Save to temp file and re-ingest so the same parser handles both formats
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix=f"redsee_logs_{analysis_id}_")
+            os.close(tmp_fd)
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(events_in, fh)
+            try:
+                events = ingest_log_file(tmp_path)
+                events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         else:
             return jsonify({"error": "No file or JSON data provided"}), 400
 
         blue_analyses[analysis_id] = {
-            "events": events,
-            "event_count": len(events),
+            "events": events_dicts,
+            "event_count": len(events_dicts),
             "report_path": None
         }
 
         return jsonify({
             "analysis_id": analysis_id,
-            "event_count": len(events),
-            "events": events
+            "event_count": len(events_dicts),
+            "events": events_dicts
         })
 
+    except ValueError as ve:
+        return jsonify({"error": str(ve), "event_count": 0, "events": []}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ─── ROUTE: Fetch Live Wazuh Alerts ───────────────────────
+        return jsonify({"error": str(e), "event_count": 0, "events": []}), 500
 @app.route("/fetch-wazuh-alerts", methods=["POST"])
-def fetch_wazuh_alerts():
+def fetch_wazuh_alerts_route():
     """
     Body:    { "minutes": 30 }
-    Returns: { "event_count": 12, "events": [...] }
+    Returns: { "analysis_id": "xyz789", "event_count": 12, "events": [...] }
     """
+    from log_ingestor import fetch_wazuh_alerts as _fetch_wazuh
     data = request.get_json() or {}
-    minutes = data.get("minutes", 30)
+    minutes = int(data.get("minutes", 30))
     analysis_id = str(uuid.uuid4())[:8]
 
     try:
-        # ── PHASE 1 STUB ── Replace in Phase 4:
-        # from log_ingestor import fetch_wazuh_alerts as wazuh_fetch
-        # events = [e.to_dict() for e in wazuh_fetch(minutes=minutes)]
-        events = _mock_events()
+        events = _fetch_wazuh(minutes=minutes)
+        events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
 
         blue_analyses[analysis_id] = {
-            "events": events,
-            "event_count": len(events),
+            "events": events_dicts,
+            "event_count": len(events_dicts),
             "report_path": None
         }
 
         return jsonify({
             "analysis_id": analysis_id,
-            "event_count": len(events),
-            "events": events
+            "event_count": len(events_dicts),
+            "events": events_dicts
         })
 
+    except (ConnectionError, ValueError) as wazuh_err:
+        # Wazuh unreachable or auth failure — return 500 JSON (no unhandled exception)
+        return jsonify({
+            "error": f"Wazuh fetch failed: {wazuh_err}",
+            "event_count": 0,
+            "events": []
+        }), 500
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "event_count": 0, "events": []}), 500
 
 
 # ─── ROUTE: Generate Blue Team Report ─────────────────────
@@ -227,16 +285,17 @@ def generate_blue_report_route():
         else:
             return jsonify({"error": "No events data provided"}), 400
 
-        # ── PHASE 1 STUB ── Replace in Phase 4:
-        # from blue_report import generate_blue_report
-        # report_path = generate_blue_report(events, report_id=analysis_id)
-        mock_filename = f"blue_report_{analysis_id}.pdf"
+        try:
+            report_path = generate_blue_report(events, report_id=analysis_id)
+        except Exception as gen_err:
+            return jsonify({"error": f"PDF generation failed: {gen_err}"}), 500
+
+        filename = Path(report_path).name
 
         if analysis_id in blue_analyses:
-            blue_analyses[analysis_id]["report_path"] = mock_filename
+            blue_analyses[analysis_id]["report_path"] = filename
 
-        return jsonify({"report_url": f"/downloads/{mock_filename}",
-                        "note": "stub — real PDF generation in Phase 4"})
+        return jsonify({"report_url": f"/downloads/{filename}"})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -251,52 +310,42 @@ def download_file(filename):
         return jsonify({"error": f"File not found: {filename}"}), 404
     return send_file(str(filepath.absolute()), as_attachment=True)
 
-
 # ─── BACKGROUND SCAN WORKER ────────────────────────────────
 
 def _run_scan_background(scan_id: str, target_url: str):
     """
-    PHASE 1: Simulates the scan pipeline with mock data and delays.
-    PHASE 4: Replace with real integration.run_full_scan() call.
+    Run the real red-team pipeline via integration.run_full_scan().
+
+    Status updates are pushed into integration._scan_status by run_full_scan;
+    app.py /scan/<id>/status reads from there via get_scan_status().
+    Findings are written to outputs/findings_{scan_id}.json by run_full_scan;
+    app.py /scan/<id>/findings reads from that path.
     """
-    import time
+    # Seed local cache so polling has a target the moment the thread starts
+    scans[scan_id] = {
+        "status": "starting",
+        "target_url": target_url,
+        "findings": [],
+        "findings_count": 0,
+        "current_module": "",
+        "report_path": None,
+        "error": None
+    }
 
     try:
-        # ── PHASE 1 STUB ──
-        # Simulate scan pipeline progression
-        stages = [
-            ("crawling", "Crawler", 1.5),
-            ("testing_sqli", "SQLi", 1.5),
-            ("testing_xss", "XSS", 1.5),
-            ("testing_idor", "IDOR", 1.5),
-            ("testing_auth", "BrokenAuth", 1.5),
-        ]
+        result = run_full_scan(target_url, scan_id=scan_id)
 
-        mock_findings = _load_mock_findings()
-
-        for status, module, delay in stages:
-            scans[scan_id]["status"] = status
-            scans[scan_id]["current_module"] = module
-            time.sleep(delay)
-
+        # Mirror result into local cache for any callers that prefer local state
         scans[scan_id].update({
             "status": "done",
-            "findings": mock_findings,
-            "findings_count": len(mock_findings),
-            "current_module": "Complete"
+            "findings": result.get("findings", []),
+            "findings_count": result.get("findings_count", 0),
+            "report_path": result.get("report_path")
         })
-
-        # ── PHASE 4 REPLACEMENT ──
-        # from integration import run_full_scan
-        # result = run_full_scan(target_url, scan_id=scan_id)
-        # scans[scan_id].update({
-        #     "status": "done",
-        #     "findings": result["findings"],
-        #     "findings_count": result["findings_count"],
-        # })
-
     except Exception as e:
+        # run_full_scan already pushed status="error" into integration._scan_status
         scans[scan_id].update({"status": "error", "error": str(e)})
+        print(f"[app.py] Background scan {scan_id} error: {e}")
 
 
 # ─── STUB HELPERS ──────────────────────────────────────────

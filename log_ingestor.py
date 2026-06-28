@@ -79,8 +79,13 @@ def ingest_log_data(raw_data: Union[dict, list]) -> list[Event]:
         return _parse_wazuh_alerts(raw_data)
     elif fmt == "splunk":
         return _parse_splunk_export(raw_data)
+    elif fmt == "normalized":
+        return _parse_normalized_events(raw_data)
     else:
-        raise ValueError(f"Unrecognized log format. Data keys: {list(raw_data.keys())[:5] if isinstance(raw_data, dict) else 'list'}")
+        raise ValueError(
+            f"Unrecognized log format. Data keys: "
+            f"{list(raw_data.keys())[:5] if isinstance(raw_data, dict) else 'list'}"
+        )
 
 
 def fetch_wazuh_alerts(api_url=None, username=None, password=None,
@@ -180,8 +185,8 @@ def fetch_wazuh_alerts(api_url=None, username=None, password=None,
 
 def _detect_format(data) -> str:
     """
-    Detect whether data is Wazuh or Splunk format.
-    Returns: "wazuh" | "splunk" | "unknown"
+    Detect whether data is Wazuh, Splunk, or pre-normalized Event format.
+    Returns: "wazuh" | "splunk" | "normalized" | "unknown"
     """
     # Handle dict-wrapped results
     items = data
@@ -215,6 +220,18 @@ def _detect_format(data) -> str:
     # Flattened Wazuh style: rule.id, agent.name
     if "rule.id" in first or "agent.name" in first:
         return "wazuh"
+
+    # Pre-normalized Event format (matches schemas.Event shape):
+    # has source, timestamp, rule_id, severity_level, src_ip, target_url, raw_payload
+    normalized_keys = {"source", "timestamp", "rule_id", "severity_level",
+                       "src_ip", "target_url", "raw_payload"}
+    if normalized_keys.issubset(first.keys()):
+        return "normalized"
+
+    # Partial normalized match — at least source + rule_id + timestamp
+    partial = {"source", "rule_id", "timestamp"}
+    if partial.issubset(first.keys()):
+        return "normalized"
 
     return "unknown"
 
@@ -301,6 +318,45 @@ def _parse_wazuh_alerts(data) -> list[Event]:
             # Skip malformed alerts silently — don't crash on one bad record
             continue
 
+    return events
+
+
+def _parse_normalized_events(data) -> list[Event]:
+    """
+    Parse pre-normalized Event-format data into list[Event].
+
+    Accepts the exact dict shape produced by schemas.Event.to_dict():
+    { "source": "Wazuh"|"Splunk", "timestamp": "...Z", "rule_id": "...",
+      "description": "...", "severity_level": int, "src_ip": "...",
+      "target_url": "...", "raw_payload": "..." }
+    """
+    items = data
+    if isinstance(data, dict):
+        items = data.get("data", data.get("items", data.get("events", [data])))
+    if not isinstance(items, list):
+        items = [items]
+
+    events: list[Event] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            src = entry.get("source", "Unknown")
+            # Schema allows only Wazuh|Splunk; fall back to source title-case if unknown
+            if src not in ("Wazuh", "Splunk"):
+                src = src.capitalize() if isinstance(src, str) else "Unknown"
+            events.append(Event(
+                source=src,
+                timestamp=str(entry.get("timestamp", "")),
+                rule_id=str(entry.get("rule_id", "0")),
+                description=str(entry.get("description", "")),
+                severity_level=int(entry.get("severity_level", 1)),
+                src_ip=str(entry.get("src_ip", "")),
+                target_url=str(entry.get("target_url", "")),
+                raw_payload=str(entry.get("raw_payload", ""))
+            ))
+        except Exception:
+            continue
     return events
 
 

@@ -292,8 +292,8 @@ if __name__ == "__main__":
     red_result = run_full_scan("http://localhost", scan_id="integration_test_red")
     print(f"Red result: {red_result['findings_count']} findings → {red_result['report_path']}")
 
-    print("\n[TEST] Blue team pipeline (mock events)...")
-    blue_result = run_blue_analysis("sample_data/mock_wazuh_alerts.json",
+    print("\n[TEST] Blue team pipeline (raw Wazuh file)...")
+    blue_result = run_blue_analysis("sample_data/sample_wazuh_alerts.json",
                                      report_id="integration_test_blue")
     print(f"Blue result: {blue_result['event_count']} events → {blue_result['report_path']}")
 
