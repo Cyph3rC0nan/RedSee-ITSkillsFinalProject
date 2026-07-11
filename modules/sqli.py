@@ -21,6 +21,7 @@ Public API:
 
 import time
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -34,6 +35,19 @@ try:
 except ImportError:
     HTTPSession = None
     _HAS_HTTP_SESSION = False
+
+# ── Agent-backed detection (engine/agent.py — sandboxed sqlmap) ─────────────
+# Follows the same _has_X / resolver pattern integration.py uses for modules:
+# if the agent engine can't be imported, scan_sqli falls back to the legacy
+# direct-HTTP scanner below so the pipeline still runs.
+try:
+    from engine.agent import run_sqli_agent as _run_sqli_agent_real
+    from engine.finding_map import candidate_to_finding as _candidate_to_finding_real
+    from engine.report_io import write_outputs as _write_outputs_real
+    from engine.llm import load_llm_config as _load_llm_config_real, LLMError as _LLMError
+    _HAS_AGENT = True
+except ImportError:
+    _HAS_AGENT = False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -154,11 +168,72 @@ def scan_sqli(endpoints: list, session=None) -> list:
 
     Args:
         endpoints: list[Endpoint] — from crawler or discovery
-        session:   Optional HTTPSession for authenticated requests
+        session:   Optional HTTPSession for authenticated requests (used only
+                   by the legacy direct-HTTP scanner; the agent-backed path
+                   tests through the sandboxed sqlmap tool instead).
 
     Returns:
         list[Finding] — one Finding per confirmed vulnerability.
         Returns empty list if nothing found (never returns None).
+
+    Agent-backed first: drives engine.agent.run_sqli_agent (sandboxed sqlmap,
+    scope-gated, budget-capped) and maps confirmed injections to Findings via
+    engine.finding_map. If the agent engine can't be imported, or fails at
+    runtime (LLM/scope/sandbox not configured), this transparently falls back
+    to the legacy direct-HTTP scanner below so the pipeline never breaks.
+    """
+    if _HAS_AGENT:
+        try:
+            return _agent_scan_sqli(endpoints)
+        except Exception as exc:
+            print(f"[SQLi] agent-backed scan failed ({exc}); falling back to legacy scanner")
+    return _legacy_scan_sqli(endpoints, session)
+
+
+def _agent_scan_sqli(endpoints: list) -> list:
+    """Run the sandboxed SQLi agent and map confirmed injections to Findings.
+
+    ONLY status=="injectable" candidates become Findings — clean/error/
+    out_of_scope candidates never do (see engine/finding_map.py). Also writes
+    the findings/SARIF/run.json audit trail via engine.report_io, under this
+    call's own scan_id (never colliding with integration.py's own
+    findings_{scan_id}.json, which uses the pipeline's scan_id, not this one).
+    """
+    if not endpoints:
+        return []
+
+    scan_id = f"sqli-{uuid.uuid4().hex[:8]}"
+    target_url = getattr(endpoints[0], "url", None) or ""
+
+    result = _run_sqli_agent_real(endpoints)
+
+    findings = [
+        _candidate_to_finding_real(c, target_url=target_url, scan_id=scan_id)
+        for c in result.candidates
+        if c.status == "injectable"
+    ]
+
+    llm_meta = None
+    try:
+        cfg = _load_llm_config_real()
+        llm_meta = {"provider": cfg.base_url, "model": cfg.model, "max_usd": cfg.max_usd}
+    except _LLMError:
+        pass
+
+    try:
+        _write_outputs_real(result, findings, scan_id=scan_id,
+                            target_url=target_url, llm_meta=llm_meta)
+    except OSError as exc:
+        print(f"[SQLi] warning: failed to write agent audit outputs: {exc}")
+
+    return findings
+
+
+def _legacy_scan_sqli(endpoints: list, session=None) -> list:
+    """Original direct-HTTP SQLi scanner (error/time/boolean/UNION probing).
+
+    Used as the fallback when the agent engine is unavailable or fails, and
+    exercised directly by tests that force that path.
     """
     findings = []
     tested = set()
@@ -533,14 +608,17 @@ if __name__ == "__main__":
     print(f"Target: {target}")
     print("=" * 60)
 
+    # This CLI demo exercises the legacy direct-HTTP scanner specifically
+    # (not the agent-backed path, which needs REDSEE_* scope/LLM config and
+    # a sandboxed sqlmap) — call it directly so the demo is deterministic.
     try:
         from utils.http_helpers import HTTPSession
         session = HTTPSession(target)
         session.authenticate_dvwa()
-        findings = scan_sqli(test_endpoints, session=session)
+        findings = _legacy_scan_sqli(test_endpoints, session=session)
     except ImportError:
         print("HTTPSession not available — running unauthenticated")
-        findings = scan_sqli(test_endpoints)
+        findings = _legacy_scan_sqli(test_endpoints)
 
     print(f"\n{'='*60}")
     print(f"📋 {len(findings)} SQLi finding(s):")

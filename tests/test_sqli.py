@@ -1,15 +1,23 @@
 """
 SQLi Scanner Test Suite — RedSee Member 3
 
-Tests the scan_sqli() function against the configured DVWA target.
+Tests 1-4 below exercise the legacy direct-HTTP scanner (_legacy_scan_sqli)
+against the configured DVWA target — that target (TARGET_URL, typically
+localhost) is a different host than the agent engine's REDSEE_ALLOWED_HOSTS
+scope, so they call _legacy_scan_sqli directly rather than the top-level
+scan_sqli (which is now agent-backed-first and would scope-refuse a
+non-allow-listed host, returning 0 findings instead of exercising this code).
+The agent-backed path and its stub-fallback are covered separately below by
+fully offline, mocked tests — see the "Agent-backed scan_sqli" section.
 
-Prerequisites:
+Prerequisites (tests 1-4 only):
     - Target reachable (public server or local Docker DVWA on port 80)
     - DVWA security level set to 'Low'
     - .env configured with TARGET_URL, TARGET_AUTH_USER, TARGET_AUTH_PASS
 
 Run from project root:
     python tests/test_sqli.py
+    PYTHONPATH=. python -m pytest tests/test_sqli.py -v
 """
 
 import sys, os
@@ -21,8 +29,13 @@ try:
 except ImportError:
     pass
 
+import pytest
+
+import modules.sqli as sqli_module
 from schemas import Endpoint, Finding
-from modules.sqli import scan_sqli
+from modules.sqli import scan_sqli, _legacy_scan_sqli
+from engine.agent import SqliCandidate, SqliAgentResult
+from engine.llm import Usage
 
 
 TARGET = os.getenv("TARGET_URL", "http://localhost")
@@ -69,9 +82,9 @@ def test_sqli_finds_dvwa_injection():
         from utils.http_helpers import HTTPSession
         session = HTTPSession(TARGET)
         session.authenticate_dvwa()
-        findings = scan_sqli([endpoint], session=session)
+        findings = _legacy_scan_sqli([endpoint], session=session)
     except ImportError:
-        findings = scan_sqli([endpoint])
+        findings = _legacy_scan_sqli([endpoint])
 
     if len(findings) >= 1:
         _ok(f"Found {len(findings)} SQLi finding(s)")
@@ -115,7 +128,7 @@ def test_sqli_no_false_positive():
         endpoint_type="page",
     )
 
-    findings = scan_sqli([endpoint])
+    findings = _legacy_scan_sqli([endpoint])
 
     if len(findings) == 0:
         _ok("No findings on endpoint with no inputs — correct")
@@ -143,9 +156,9 @@ def test_schema_compliance():
         from utils.http_helpers import HTTPSession
         session = HTTPSession(TARGET)
         session.authenticate_dvwa()
-        findings = scan_sqli([endpoint], session=session)
+        findings = _legacy_scan_sqli([endpoint], session=session)
     except ImportError:
-        findings = scan_sqli([endpoint])
+        findings = _legacy_scan_sqli([endpoint])
 
     if not findings:
         print("  ⚠️  No findings to validate schema — skipping (re-run with live target)")
@@ -205,15 +218,124 @@ def test_sqli_blind_detection():
         from utils.http_helpers import HTTPSession
         session = HTTPSession(TARGET)
         session.authenticate_dvwa()
-        findings = scan_sqli([endpoint], session=session)
+        findings = _legacy_scan_sqli([endpoint], session=session)
     except ImportError:
-        findings = scan_sqli([endpoint])
+        findings = _legacy_scan_sqli([endpoint])
 
     if len(findings) >= 1:
         _ok(f"Blind SQLi detected — {len(findings)} finding(s)")
         print(f"  📌 Technique: {findings[0].evidence[:80]}")
     else:
         _fail("Expected ≥1 blind SQLi finding — found 0 (time-based or boolean may need live target)")
+
+
+# ──────────────────────────────────────────────────────────────
+# Agent-backed scan_sqli (fully offline — mocked run_sqli_agent, no
+# Docker/LLM/network). Covers: injectable -> Finding, clean -> [], the
+# import-failure stub-fallback to the legacy scanner, and that the public
+# signature scan_sqli(endpoints, session=None) is unchanged.
+# ──────────────────────────────────────────────────────────────
+
+def _cand(status, **overrides):
+    base = dict(
+        endpoint_url="http://redsees.com:3000/rest/products/search?q=apple",
+        parameter="q" if status == "injectable" else None,
+        injectable=status == "injectable",
+        technique="boolean-based blind" if status == "injectable" else None,
+        dbms="SQLite" if status == "injectable" else None,
+        evidence="Parameter: q (GET)\n    Type: boolean-based blind\n    Payload: q=apple' AND 1=1\n"
+                 if status == "injectable" else "",
+        sqlmap_argv=["sqlmap", "-u", "http://redsees.com:3000/..."],
+        depth=0, status=status, error=None,
+    )
+    base.update(overrides)
+    return SqliCandidate(**base)
+
+
+def _result(candidates, stopped_reason="done"):
+    return SqliAgentResult(
+        candidates=candidates,
+        usage=Usage(input_tokens=10, output_tokens=5, cost_usd=0.0, calls=1),
+        iterations=1,
+        transcript=[],
+        stopped_reason=stopped_reason,
+    )
+
+
+def _endpoint():
+    return Endpoint(url="http://redsees.com:3000/rest/products/search?q=apple",
+                    method="GET", form_action=None, inputs=["q"],
+                    cookies_needed=[], endpoint_type="api")
+
+
+def test_scan_sqli_signature_unchanged():
+    import inspect
+    params = list(inspect.signature(scan_sqli).parameters)
+    assert params == ["endpoints", "session"]
+    assert inspect.signature(scan_sqli).parameters["session"].default is None
+
+
+def test_agent_backed_injectable_candidate_yields_finding(monkeypatch):
+    monkeypatch.setattr(sqli_module, "_HAS_AGENT", True)
+    monkeypatch.setattr(sqli_module, "_run_sqli_agent_real",
+                        lambda endpoints, **kw: _result([_cand("injectable")]))
+    monkeypatch.setattr(sqli_module, "_write_outputs_real", lambda *a, **kw: None)
+
+    findings = scan_sqli([_endpoint()])
+    assert len(findings) == 1
+    assert isinstance(findings[0], Finding)
+    assert findings[0].type == "SQLi"
+    assert findings[0].severity in {"Critical", "High", "Medium", "Low"}
+
+
+def test_agent_backed_clean_candidate_yields_empty_list(monkeypatch):
+    monkeypatch.setattr(sqli_module, "_HAS_AGENT", True)
+    monkeypatch.setattr(sqli_module, "_run_sqli_agent_real",
+                        lambda endpoints, **kw: _result([_cand("clean")]))
+    monkeypatch.setattr(sqli_module, "_write_outputs_real", lambda *a, **kw: None)
+
+    findings = scan_sqli([_endpoint()])
+    assert findings == []
+
+
+def test_agent_backed_error_candidate_yields_empty_list_not_a_finding(monkeypatch):
+    # A scan error (e.g. target unreachable) must never be reported as a
+    # finding OR silently treated as "clean" — it simply yields no Finding.
+    monkeypatch.setattr(sqli_module, "_HAS_AGENT", True)
+    monkeypatch.setattr(sqli_module, "_run_sqli_agent_real",
+                        lambda endpoints, **kw: _result([_cand("error")], stopped_reason="error"))
+    monkeypatch.setattr(sqli_module, "_write_outputs_real", lambda *a, **kw: None)
+
+    findings = scan_sqli([_endpoint()])
+    assert findings == []
+
+
+def test_stub_fallback_used_when_agent_import_unavailable(monkeypatch):
+    # Force the "engine/agent import failed" state and confirm scan_sqli still
+    # returns a valid list via the legacy scanner (no exception, no None).
+    monkeypatch.setattr(sqli_module, "_HAS_AGENT", False)
+    endpoint = Endpoint(url="http://127.0.0.1:1/no-such-service", method="GET",
+                        form_action=None, inputs=["id"], cookies_needed=[],
+                        endpoint_type="api")
+
+    findings = scan_sqli([endpoint])
+    assert isinstance(findings, list)   # never None, never raises
+
+
+def test_runtime_agent_failure_falls_back_to_legacy_scanner(monkeypatch):
+    # Agent import succeeds but the call itself raises (e.g. LLM/scope not
+    # configured, sandbox unavailable) — scan_sqli must still return a list.
+    def _boom(endpoints, **kw):
+        raise RuntimeError("LLM not configured")
+
+    monkeypatch.setattr(sqli_module, "_HAS_AGENT", True)
+    monkeypatch.setattr(sqli_module, "_run_sqli_agent_real", _boom)
+    endpoint = Endpoint(url="http://127.0.0.1:1/no-such-service", method="GET",
+                        form_action=None, inputs=["id"], cookies_needed=[],
+                        endpoint_type="api")
+
+    findings = scan_sqli([endpoint])
+    assert isinstance(findings, list)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -238,3 +360,36 @@ if __name__ == "__main__":
     else:
         print("  ⚠️  Fix failures before merging to main")
     print(f"{'='*55}\n")
+
+    # ── Agent-backed / stub-fallback tests (assert-based; need a monkeypatch shim) ──
+    class _MP:
+        def __init__(self):
+            self._undo = []
+
+        def setattr(self, obj, name, value):
+            self._undo.append((obj, name, getattr(obj, name)))
+            setattr(obj, name, value)
+
+        def undo(self):
+            for obj, name, old in reversed(self._undo):
+                setattr(obj, name, old)
+
+    print("\n" + "=" * 55)
+    print("  Agent-backed scan_sqli — offline tests")
+    print("=" * 55)
+    for _fn in (
+        test_scan_sqli_signature_unchanged,
+        test_agent_backed_injectable_candidate_yields_finding,
+        test_agent_backed_clean_candidate_yields_empty_list,
+        test_agent_backed_error_candidate_yields_empty_list_not_a_finding,
+        test_stub_fallback_used_when_agent_import_unavailable,
+        test_runtime_agent_failure_falls_back_to_legacy_scanner,
+    ):
+        needs_mp = "monkeypatch" in _fn.__code__.co_varnames[:_fn.__code__.co_argcount]
+        mp = _MP()
+        try:
+            _fn(mp) if needs_mp else _fn()
+            print(f"  ok  {_fn.__name__}")
+        finally:
+            mp.undo()
+    print("All agent-backed scan_sqli tests passed!")

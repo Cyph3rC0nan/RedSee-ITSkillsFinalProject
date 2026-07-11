@@ -15,6 +15,14 @@ Routes:
 Owner: Member 4 (PHASE 4 wiring by integration agent)
 """
 
+# Load .env before anything else reads config — including the transitive
+# imports below (integration -> red_report reads os.getenv(...) at its own
+# module level). No need to `source .env` first; real exported env vars still
+# win (load_env uses override=False), and this degrades to a no-op if
+# python-dotenv isn't installed.
+from engine.env import load_env
+load_env()
+
 import os
 import json
 import uuid
@@ -23,14 +31,11 @@ import tempfile
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
-from dotenv import load_dotenv
 
 from integration import run_full_scan, get_scan_status, _scan_status
 from red_report import generate_red_report
 from blue_report import generate_blue_report
 from log_ingestor import ingest_log_file, fetch_wazuh_alerts
-
-load_dotenv()
 
 app = Flask(__name__)
 CORS(app)

@@ -284,6 +284,11 @@ def run_blue_analysis(log_file_path: str, report_id: str = None) -> dict:
 
 # ── CLI Test ────────────────────────────────────────────
 if __name__ == "__main__":
+    # Load .env before anything reads config — no need to `source .env` first;
+    # real exported env vars still win (load_env uses override=False).
+    from engine.env import load_env
+    load_env()
+
     print("=" * 60)
     print("RedSee — Integration Pipeline Test")
     print("=" * 60)
