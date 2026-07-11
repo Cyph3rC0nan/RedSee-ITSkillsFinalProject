@@ -1,0 +1,62 @@
+RedSees Marketplace — Ground-Truth Vulnerability Map
+=====================================================
+
+What this is: the authoritative answer key for the RedSees Marketplace demo lab
+target. This file is BOTH human documentation and a scanner-evaluation fixture —
+every intentionally planted vulnerability in the demo-target/ companion service is
+recorded here, one delimited block per sink, in a consistent key: value shape so a
+human or a future agent session can parse it without ambiguity. Anything NOT listed
+in this file is not an intentionally planted vuln for this demo pass (XSS-only scope
+— no SQLi/IDOR/auth issues were added this pass).
+
+Base URL / hostname: http://redsees.com:8081/market/
+Themed Juice Shop (branding only, no planted vulns of its own beyond stock Juice
+Shop challenges): http://redsees.com:3000/ (NODE_CONFIG_ENV=redsees)
+
+Authorization: lab-only target, reachable from the RedSee sandbox exclusively,
+never exposed publicly. All proofs are benign (`alert(1)`-style). No real user data.
+
+=== VULN: XSS-R-01 ===
+class: XSS
+subtype: reflected
+detectable_by: dalfox (HTTP, no headless browser)
+method: GET
+url: http://redsees.com:8081/market/search
+param: q
+reflection_context: inHTML-none (body text, between tags)
+filtering: none (raw, unescaped)
+minimal_proof: <script>alert(1)</script>
+expected_dalfox: [POC] line + [V] Triggered XSS Payload
+difficulty: easy
+remediation: HTML-entity-encode output / use an auto-escaping template engine
+discovery: linked from /market/ landing page so the crawler records param q
+
+=== VULN: XSS-R-02 ===
+class: XSS
+subtype: reflected
+detectable_by: dalfox (HTTP, no headless browser)
+method: GET
+url: http://redsees.com:8081/market/greeting
+param: name
+reflection_context: inHTML-none (body text, between tags)
+filtering: none (raw, unescaped)
+minimal_proof: <script>alert(1)</script>
+expected_dalfox: [POC] line + [V] Triggered XSS Payload
+difficulty: easy
+remediation: HTML-entity-encode output / use an auto-escaping template engine
+discovery: linked from /market/ landing page so the crawler records param name
+
+=== VULN: XSS-R-03 ===
+class: XSS
+subtype: reflected
+detectable_by: dalfox (HTTP, no headless browser)
+method: GET
+url: http://redsees.com:8081/market/notfound
+param: path
+reflection_context: inHTML-none (body text, between tags)
+filtering: none (raw, unescaped)
+minimal_proof: <script>alert(1)</script>
+expected_dalfox: [POC] line + [V] Triggered XSS Payload
+difficulty: easy
+remediation: HTML-entity-encode output / use an auto-escaping template engine
+discovery: linked from /market/ landing page so the crawler records param path

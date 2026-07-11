@@ -1,0 +1,52 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "RedSee",
+          "rules": [
+            {
+              "id": "XSS",
+              "name": "CrossSiteScripting"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "XSS",
+          "level": "error",
+          "message": {
+            "text": "Dalfox confirmed reflected XSS in parameter 'name' (context: inHTML-URL). Remediation: apply context-aware output encoding (HTML-entity encode for an HTML-body context, JS-string escape for a script context, URL-encode for a URL/attribute context) to every user-controlled value before it is reflected in a response. Prefer a templating engine with auto-escaping enabled, and deploy a Content-Security-Policy (CSP) header as defense-in-depth.\n\n--- dalfox evidence ---\n[POC][V][GET][inHTML-URL] http://redsees.com:8080/vulnerabilities/xss_r/?name=test%22%3E%3Csvg%2Fclass%3D%22dalfox%22onLoad%3Dalert%281%29%3E\n[POC][V][GET][inHTML-none(1)] http://redsees.com:8080/vulnerabilities/xss_r/?=&name=test%3Cdiv+onselectionchange%3Dconsole.log%281%29+class%3Ddalfox%3E%3C%2Fdiv%3E\n[I] Reflected name param => \\  |  <  >  \"  )  (  {  }  [  ]  `  '  ;  .  $  +  :  =  -  ,\n[V] Triggered XSS Payload (found DOM Object): name=\"><svg/class=\"dalfox\"onLoad=alert(1)>\n[V] Triggered XSS Payload (found DOM Object): =<div onselectionchange=console.log(1) class=dalfox></div>\n\nPayload: name=\"><svg/class=\"dalfox\"onLoad=alert(1)>"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "http://redsees.com:8080/vulnerabilities/xss_r/?name=test"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "XSS",
+          "level": "error",
+          "message": {
+            "text": "Dalfox confirmed reflected XSS in parameter 'name' (context: inHTML). Remediation: apply context-aware output encoding (HTML-entity encode for an HTML-body context, JS-string escape for a script context, URL-encode for a URL/attribute context) to every user-controlled value before it is reflected in a response. Prefer a templating engine with auto-escaping enabled, and deploy a Content-Security-Policy (CSP) header as defense-in-depth.\n\n--- dalfox evidence ---\n[POC][V][GET][inHTML] http://redsees.com:8080/vulnerabilities/xss_r/?name=%27%3E%3Cembed+src%3D%23+codebase%3Djavascript%3Aalert%281%29%2F%2F+class%3Ddalfox%3E%3C%2Fembed%3E\n[I] Reflected name param => \\  '  >  \"  <  }  |  ;  `  $  (  =  :  )  {  ,  ]  [  .  +  -\n[V] Triggered XSS Payload (found DOM Object): name='><embed src=# codebase=javascript:alert(1)// class=dalfox></embed>\n\nPayload: name='><embed src=# codebase=javascript:alert(1)// class=dalfox></embed>"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "http://redsees.com:8080/vulnerabilities/xss_r/"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

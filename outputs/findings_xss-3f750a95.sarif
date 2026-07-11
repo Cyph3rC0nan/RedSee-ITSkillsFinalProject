@@ -1,0 +1,36 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "RedSee",
+          "rules": [
+            {
+              "id": "XSS",
+              "name": "CrossSiteScripting"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "XSS",
+          "level": "error",
+          "message": {
+            "text": "Dalfox confirmed reflected XSS in parameter 'name' (context: inHTML-none(1)). Remediation: apply context-aware output encoding (HTML-entity encode for an HTML-body context, JS-string escape for a script context, URL-encode for a URL/attribute context) to every user-controlled value before it is reflected in a response. Prefer a templating engine with auto-escaping enabled, and deploy a Content-Security-Policy (CSP) header as defense-in-depth.\n\n--- dalfox evidence ---\n[POC][V][GET][inHTML-none(1)] http://redsees.com:8080/vulnerabilities/xss_r/?=&name=test%3Cdiv+onanimationstart%3Dprint%281%29+class%3Ddalfox%3E%3C%2Fdiv%3E\n[POC][V][GET][inHTML-URL] http://redsees.com:8080/vulnerabilities/xss_r/?name=test%3E%3Cobject+data%3D%23+codebase%3Djavascript%3Aalert%28String.fromCharCode%2888%2C83%2C83%29%29%2F%2F+class%3Ddalfox%3E%3C%2Fobject%3E\n[I] Reflected name param => $  -  =  \\  (  >  \"  {  .  '  `  <  ;  :  |  }  )  [  ,  +  ]\n[V] Triggered XSS Payload (found DOM Object): =<div onanimationstart=print(1) class=dalfox></div>\n[V] Triggered XSS Payload (found DOM\n\nPayload: =<div onanimationstart=print(1) class=dalfox></div>"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "http://redsees.com:8080/vulnerabilities/xss_r/?name=test"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

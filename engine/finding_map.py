@@ -1,9 +1,10 @@
 # engine/finding_map.py
 """
-Maps agent-produced SqliCandidate objects (engine/agent.py) into schema-valid
-Finding objects (schemas.py — FROZEN, matched here exactly).
+Maps agent-produced candidate objects (engine/agent.py's SqliCandidate,
+engine/xss_agent.py's XssCandidate) into schema-valid Finding objects
+(schemas.py — FROZEN, matched here exactly).
 
-Only a candidate whose sqlmap run actually CONFIRMED an injection
+Only a candidate whose tool run actually CONFIRMED a vulnerability
 (status == "injectable") may become a Finding. clean/error/out_of_scope
 candidates are not verdicts of "no vulnerability" in the exploit sense — they
 are the absence of a confirmed one — so they never produce a Finding.
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 
 from schemas import Finding
 from engine.agent import SqliCandidate
+from engine.xss_agent import XssCandidate
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 _PAYLOAD_LINE_RE = re.compile(r"Payload:\s*(.+)", re.I)
@@ -88,5 +90,67 @@ def candidate_to_finding(cand: SqliCandidate, *, target_url: str, scan_id: str) 
         payload=payload,
         evidence=evidence,
         severity=_severity_for(cand),
+        timestamp=_ts(),
+    )
+
+
+# ── XSS (engine/xss_agent.py) ────────────────────────────────────────────────
+
+# Remediation guidance shared by every XSS Finding.
+_XSS_REMEDIATION = (
+    "Remediation: apply context-aware output encoding (HTML-entity encode for an "
+    "HTML-body context, JS-string escape for a script context, URL-encode for a "
+    "URL/attribute context) to every user-controlled value before it is reflected "
+    "in a response. Prefer a templating engine with auto-escaping enabled, and "
+    "deploy a Content-Security-Policy (CSP) header as defense-in-depth."
+)
+
+
+def _severity_for_xss(cand: XssCandidate) -> str:
+    """Severity rule for a Dalfox-confirmed reflected XSS — no invented CVSS
+    score (schemas.py has no such field).
+
+    Always "High": a confirmed reflected XSS is a serious, real risk (arbitrary
+    JS execution in the victim's session) regardless of injection context.
+    Unlike SQLi's technique-based High/Critical split, Dalfox's `context` field
+    (inHTML-none, inJS, inATTR, ...) is a syntactic classification, not a
+    reliable signal of exploit severity — the agent only confirms REFLECTED
+    XSS (no stored/persistence signal), so there is no honest basis to
+    escalate any confirmed finding above High here.
+    """
+    return "High"
+
+
+def xss_candidate_to_finding(cand: XssCandidate, *, target_url: str, scan_id: str) -> Finding:
+    """Build a schema-valid Finding from a CONFIRMED injectable XssCandidate.
+
+    Raises ValueError if `cand` is not a confirmed injection — this is a
+    caller-contract violation (only status=="injectable" candidates should
+    ever be passed here), not a normal "no finding" outcome.
+    """
+    if cand.status != "injectable" or not cand.injectable:
+        raise ValueError(
+            f"xss_candidate_to_finding requires a confirmed injectable candidate "
+            f"(got status={cand.status!r}); clean/error/out_of_scope candidates "
+            f"must never become a Finding"
+        )
+
+    parameter = cand.parameter or "unknown"
+    context = cand.context or "unspecified context"
+    payload = cand.payload or "(no explicit payload captured — see evidence)"
+
+    evidence = (
+        f"Dalfox confirmed reflected XSS in parameter '{parameter}' "
+        f"(context: {context}). {_XSS_REMEDIATION}\n\n"
+        f"--- dalfox evidence ---\n{cand.evidence.strip()}"
+    )
+
+    return Finding(
+        type="XSS",
+        url=cand.endpoint_url or target_url,
+        parameter=parameter,
+        payload=payload,
+        evidence=evidence,
+        severity=_severity_for_xss(cand),
         timestamp=_ts(),
     )

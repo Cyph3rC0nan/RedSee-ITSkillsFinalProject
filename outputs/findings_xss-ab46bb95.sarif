@@ -1,0 +1,36 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "RedSee",
+          "rules": [
+            {
+              "id": "XSS",
+              "name": "CrossSiteScripting"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "XSS",
+          "level": "error",
+          "message": {
+            "text": "Dalfox confirmed reflected XSS in parameter 'name' (context: inHTML-none(1)). Remediation: apply context-aware output encoding (HTML-entity encode for an HTML-body context, JS-string escape for a script context, URL-encode for a URL/attribute context) to every user-controlled value before it is reflected in a response. Prefer a templating engine with auto-escaping enabled, and deploy a Content-Security-Policy (CSP) header as defense-in-depth.\n\n--- dalfox evidence ---\n[POC][V][GET][inHTML-none(1)] http://redsees.com:8080/vulnerabilities/xss_r/?=&name=test%3Caudio+controls+ondurationchange%3Dconsole.warn%281%29+id%3Ddalfox%3E%3Csource+src%3D1.mp3+type%3Daudio%2Fmpeg%3E%3C%2Faudio%3E\n[POC][R][GET][inHTML-URL] http://redsees.com:8080/vulnerabilities/xss_r/?name=test%27%3E%3Ckeygen+onfocus%3Dalert%281%29+autofocus%3E\n[POC][R][GET][inHTML-URL] http://redsees.com:8080/vulnerabilities/xss_r/?name=test%27%3E%3Ctextarea+onfocus%3Dalert%281%29+autofocus%3E%3C%2Ftextarea%3E\n[POC][R][GET][inHTML-URL] http://redsees.com:8080/vulnerabilities/xss_r/?name=test%22%3E%3CiFrA\n\nPayload: =<audio controls ondurationchange=console.warn(1) id=dalfox><source src=1.mp3 type=audio/mpeg></audio>"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "http://redsees.com:8080/vulnerabilities/xss_r/?name=test"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

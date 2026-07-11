@@ -626,8 +626,9 @@ if __name__ == "__main__":
     # below — no need to `source .env` first; real exported env vars still win.
     #
     # DVWA's reflected-XSS endpoint requires an authenticated session, so pass the
-    # PHPSESSID + security=low cookies via REDSEE_DVWA_COOKIE, e.g.:
-    #   REDSEE_DVWA_COOKIE="PHPSESSID=<sid>; security=low" \
+    # PHPSESSID + security=low cookies via REDSEE_XSS_COOKIE (the same env var
+    # modules/xss.py's agent-backed scan_xss reads), e.g.:
+    #   REDSEE_XSS_COOKIE="PHPSESSID=<sid>; security=low" \
     #   REDSEE_AUTHORIZED=true REDSEE_ALLOWED_HOSTS=redsees.com \
     #   REDSEE_LLM_BASE_URL=http://localhost:11434/v1 REDSEE_LLM_MODEL=llama3.2 \
     #   REDSEE_LLM_MAX_USD=5 PYTHONPATH=. python engine/xss_agent.py
@@ -638,7 +639,7 @@ if __name__ == "__main__":
 
     from schemas import Endpoint
 
-    cookie = os.environ.get("REDSEE_DVWA_COOKIE") or None
+    cookie = os.environ.get("REDSEE_XSS_COOKIE") or None
     demo_endpoints = [
         Endpoint(
             url="http://redsees.com:8080/vulnerabilities/xss_r/?name=test",
@@ -650,7 +651,7 @@ if __name__ == "__main__":
     print(f"stopped_reason={result.stopped_reason} iterations={result.iterations} "
           f"calls={result.usage.calls} cost=${result.usage.cost_usd:.4f}")
     if not cookie:
-        print("  (no REDSEE_DVWA_COOKIE set — DVWA's xss_r route needs auth; expect a "
+        print("  (no REDSEE_XSS_COOKIE set — DVWA's xss_r route needs auth; expect a "
               "login redirect and a clean/negative result)")
     print("scan path:")
     for step in result.transcript:
