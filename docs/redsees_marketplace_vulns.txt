@@ -16,6 +16,16 @@ Shop challenges): http://redsees.com:3000/ (NODE_CONFIG_ENV=redsees)
 Authorization: lab-only target, reachable from the RedSee sandbox exclusively,
 never exposed publicly. All proofs are benign (`alert(1)`-style). No real user data.
 
+Verified 2026-07-12: live `dalfox url` run (v2.13.0, via the redsee-sandbox image)
+against all three sinks each produced a `[POC][V][GET][...]` line, e.g.
+`[POC][V][GET][inHTML-URL] http://localhost:8081/market/search?q=test%3E...`
+— confirms _parse_dalfox_output's injectable path (a real [POC] structural match).
+Note: the bracketed context Dalfox prints per line (e.g. `inHTML-URL`) is ITS OWN
+per-payload technique label, not a property of the sink — it varies with whichever
+payload happened to succeed. `reflection_context: inHTML-none` below describes the
+actual source-level placement we built (plain body text between tags, zero
+encoding); it is not expected to always match Dalfox's per-run context tag.
+
 === VULN: XSS-R-01 ===
 class: XSS
 subtype: reflected
