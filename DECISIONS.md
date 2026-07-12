@@ -214,8 +214,11 @@ handling; the agent's value-add is choosing targets/parameters/depth and
 interpreting results, not reinventing payload generation.
 **Alternatives / trade-off:** Have the LLM generate payloads directly —
 rejected: higher risk of unreliable/unsafe output and duplicated effort versus
-tools that already do this well. Currently implemented: sqlmap (SQLi, v1.9.6)
-and Dalfox v2.13.0 (reflected XSS), both installed in `docker/sandbox/`.
+tools that already do this well. Currently implemented: sqlmap (SQLi, v1.9.6),
+Dalfox v2.13.0 (reflected XSS), and nuclei v3.11.0 + nuclei-templates v10.4.5
+(template-based CVE/misconfig/exposure detection — `engine/nuclei_agent.py`), all
+installed in `docker/sandbox/`. Tool versions are pinned + sha256-verified, never
+`@latest`, and never auto-updated at build or scan time (see D-016).
 
 ---
 
@@ -256,3 +259,56 @@ team-wide agreement, not this workstream's to change unilaterally. Implemented:
 `engine/report_io.py`'s `write_outputs` emits `findings_<id>.json` (same shape
 `integration.py`/`red_report.py` already read), `findings_<id>.sarif`, and
 `run_<id>.json`, all additive to the existing PDF path.
+
+---
+
+### D-015: nuclei's config/cache dir lives under `/tmp`, not a read-only image path
+
+**Status:** Accepted
+**Date:** 2026-07-12
+**Decision:** In the sandbox image, nuclei's `XDG_CONFIG_HOME`/`XDG_CACHE_HOME`
+point at `/tmp/.config` / `/tmp/.cache` (pre-populated at build time), NOT a
+baked read-only path like `/opt/nuclei-config`.
+**Why:** Unlike sqlmap/Dalfox, nuclei resolves its config/cache via
+`$XDG_CONFIG_HOME`/`$XDG_CACHE_HOME` (Go's `os.UserConfigDir`/`UserCacheDir`), not
+`$HOME`. A *real* scan WRITES `config.yaml` / `reporting-config.yaml` / the
+template cache at startup and dies with `FTL … could not create config file` if
+that dir is on the `--read-only` rootfs. `engine/sandbox.py` (frozen, D-010)
+exposes exactly one writable path: `--tmpfs /tmp` with `HOME=/tmp`. Putting XDG
+under `/tmp` means the baked files satisfy read-only `-tv`/`-version` self-checks
+(no tmpfs mounted), while the sandbox's tmpfs *overlays* them with a writable dir
+for real scans. The scan always passes `-t /opt/nuclei-templates` explicitly, so
+template resolution never depends on the config nuclei regenerates on the tmpfs.
+**Alternatives / trade-off:** Keep the earlier read-only `/opt` bake (which passed
+Prompt 1's `-tv`/`-version` checks) — rejected: it silently breaks every real
+scan on the read-only rootfs. Modify `engine/sandbox.py` to add a writable mount —
+rejected: the sandbox contract is frozen (D-010). Full details in
+`docs/nuclei_sandbox.md`.
+
+---
+
+### D-016: nuclei runs a fixed, harness-owned, detection-only profile
+
+**Status:** Accepted
+**Date:** 2026-07-12
+**Decision:** The model chooses only a target, optional focus tags (from a safe
+allowlist), and a note — never nuclei flags. The harness fixes the profile:
+`-jsonl -omit-raw -disable-update-check -no-interactsh`, the bundled templates
+(`-t /opt/nuclei-templates`), a severity floor that excludes info-only noise
+(`-severity low,medium,high,critical`), and `-exclude-tags dos,intrusive,fuzz,
+brute,oob`. Auto-update (`-up`/`-ut`), interactsh/OAST out-of-band callbacks,
+code-protocol/headless execution, and cloud upload are hard-banned; an auth cookie
+is attached harness-side as the only permitted `-H "Cookie: …"`.
+**Why:** Extends D-011 (detection-only) and D-012 (drive tools, not payloads) to
+nuclei's much larger surface. nuclei can send OOB callbacks, run intrusive/DoS
+templates, and phone home for updates — an LLM must not be able to enable any of
+those. `status="found"` derives SOLELY from parsed `-jsonl` result lines (D-013),
+never the model. Info-severity templates are excluded by default as noise, not
+findings.
+**Alternatives / trade-off:** Let the model pass nuclei flags/severities/OOB
+options for flexibility — rejected: the harness, not the model, is the safety
+enforcement point (D-009). Tags smuggling a flag or a dangerous category raise
+rather than silently run. Implemented in `engine/nuclei_agent.py`
+(`_FORBIDDEN_LITERAL`, `_sanitize_tags`, `_validate_target`, `_assert_note_safe`,
+`_assert_no_forbidden_flags`); no OOB/exploit config was added, matching the task's
+detection-only mandate.

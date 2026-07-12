@@ -33,6 +33,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | SQLi agent-driven vertical slice (replace static stub) | Done |
 | Sandbox + scope-gating harness for the slice | Done |
 | Generalize agent pattern to xss / idor / auth | In progress (xss done, idor/auth not started) |
+| nuclei template-scan agent (CVEs / misconfig / exposures) | In progress (engine + sandbox done; Finding mapping + output wiring next) |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -52,6 +53,32 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-12 — nuclei template-scan agent (third agent)
+
+**Done:** Added `engine/nuclei_agent.py` — a third agent-driven vuln-class scanner,
+parallel to SQLi (`engine/agent.py`) and XSS (`engine/xss_agent.py`), driving nuclei
+for CVEs / misconfigurations / exposures. Same shape: ONE harness-owned `run_nuclei`
+tool (model supplies only target + optional safe-allowlist tags + note, never flags),
+scope-gated + sandbox-only via `run_in_sandbox`, evidence-gated on parsed `-jsonl`
+result lines (`status="found"` comes solely from nuclei output), bounded completion
+pass, per-candidate `error` status (never a false clean/found). `NucleiCandidate`/
+`NucleiAgentResult` are local, not in the frozen `schemas.py`. 34 offline tests against
+REAL captured DVWA JSONL fixtures; 105-test regression clean; no engine/schemas
+changes. Prereqs completed on this branch: pinned nuclei v3.11.0 + templates v10.4.5
+baked into the sandbox image, and a required Dockerfile fix moving nuclei's XDG
+config/cache to `/tmp` so real (writing) scans work under the frozen read-only sandbox
+(see D-015). New decisions: D-015 (config-dir under /tmp), D-016 (nuclei detection-only
+safety profile). See `HANDOFF.md` for exact file diffs + the one live-smoke blocker.
+
+**Next:** Prompt 3 — map `NucleiCandidate(status="found")` → schema-valid `Finding`
+(+ severity mapping info/low/medium/high/critical → Critical/High/Medium/Low; decide
+how nuclei's CVE/misconfig/exposure results fit the frozen `SQLi/XSS/IDOR/BrokenAuth`
+Finding types) and wire output (`report_io` + a `modules/` entry point / resolver).
+
+**Blockers:** Live nuclei smoke is blocked by orphaned host-local sandbox networking
+state (a crashed run's leftover docker network + iptables rules), not by agent code —
+see `HANDOFF.md` "Open issues / blockers" for the exact user cleanup step.
 
 ### 2026-07-12 — Continuity docs created
 
