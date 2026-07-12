@@ -114,6 +114,21 @@ alter, evidence-gated parsing, per-candidate status, a bounded deterministic com
 pass, and a `stopped_reason`. The model supplies only a target, optional focus tags (from a
 safe allowlist), and a free-text note; the harness builds the argv with the fixed flags
 above and refuses any smuggled flag/tag or header injection. `status="found"` is derived
-SOLELY from parsed nuclei `-jsonl` result lines — never from the model. Findings mapping and
-output wiring are deliberately left to the next task. See `tests/test_nuclei_agent.py`
-(offline, real captured JSONL fixtures in `tests/fixtures/nuclei_dvwa_real.jsonl`).
+SOLELY from parsed nuclei `-jsonl` result lines — never from the model. See
+`tests/test_nuclei_agent.py` (offline, real captured JSONL fixtures in
+`tests/fixtures/nuclei_dvwa_real.jsonl`).
+
+## Output surfacing (`engine/report_io.py` + `modules/recon.py`)
+
+nuclei results are BROADER than the frozen `schemas.py` Finding enum
+(SQLi/XSS/IDOR/BrokenAuth), so they are DELIBERATELY not typed Findings (decision D-017).
+`engine.report_io.write_outputs(...)` takes an optional `nuclei_candidates=`: found
+candidates are added to the SARIF report (`ruleId` = nuclei `template_id`; SARIF level from
+nuclei severity — critical/high → `error`, medium → `warning`, low/info → `note`), the full
+raw list is written to `nuclei_<id>.json`, and a `nuclei` summary block (counts by status +
+by severity) is added to `run_<id>.json`. `findings_<id>.json` stays typed-Finding-only and
+contains no nuclei rows; with `nuclei_candidates` omitted the existing SQLi/XSS output is
+byte-for-byte unchanged. `modules/recon.py`'s `run_recon_scan(targets, …)` chains
+`run_nuclei_agent` → `write_outputs(nuclei_candidates=…)` and is invoked on its own (e.g.
+`python -m modules.recon`) — it is intentionally NOT wired into `integration.py`'s resolver
+or the `scan_<vuln>` pipeline. Covered by `tests/test_report_io.py`.

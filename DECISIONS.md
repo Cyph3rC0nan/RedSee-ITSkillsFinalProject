@@ -312,3 +312,37 @@ rather than silently run. Implemented in `engine/nuclei_agent.py`
 (`_FORBIDDEN_LITERAL`, `_sanitize_tags`, `_validate_target`, `_assert_note_safe`,
 `_assert_no_forbidden_flags`); no OOB/exploit config was added, matching the task's
 detection-only mandate.
+
+---
+
+### D-017: nuclei results are surfaced into SARIF/JSON/run.json, NOT typed Findings
+
+**Status:** Accepted
+**Date:** 2026-07-12
+**Decision:** nuclei's findings (CVEs, misconfigurations, exposures) are broader
+than the frozen `schemas.py` Finding enum (SQLi/XSS/IDOR/BrokenAuth), so they do
+NOT become typed `Finding` objects and NEVER enter `findings_<id>.json`. Instead a
+list of `NucleiCandidate(status="found")` is surfaced ADDITIVELY into the SARIF
+report (ruleId = nuclei `template_id`), a dedicated `nuclei_<id>.json` (the raw
+candidate list), and a `nuclei` summary block in `run_<id>.json`.
+`engine.report_io.write_outputs` gained an optional `nuclei_candidates=None` param;
+when omitted, every existing output is byte-for-byte unchanged. `schemas.py` is
+NOT modified, and nuclei is NOT wired into `integration.py`'s resolver /
+`scan_sqli` / `scan_xss` — the standalone `modules/recon.py` (`run_recon_scan`)
+chains the agent into `write_outputs` separately.
+**Why:** Forcing nuclei's open-ended template catalogue into four fixed Finding
+types would mean either mis-typing results or expanding the frozen contract
+(D-014) that the rest of the team's pipeline (dashboard, red_report) depends on.
+SARIF's `ruleId` is already free-form, so it carries the real template id losslessly
+and machine-readably without touching `schemas.py`. Keeping nuclei out of the
+typed-Finding pipeline also preserves the "a Finding is a CONFIRMED typed vuln"
+contract (AGENTS.md) — a nuclei match is evidence of an exposure, surfaced as such,
+not silently relabelled as SQLi/XSS/IDOR/BrokenAuth.
+**Alternatives / trade-off:** (a) Add a `Recon`/`Misconfig` value to the Finding
+enum — rejected: `schemas.py` is frozen (D-014, AGENTS.md). (b) Map every nuclei
+result onto the closest existing Finding type — rejected: lossy and misleading.
+(c) Put nuclei rows in `findings_<id>.json` with a synthetic type — rejected: it
+would corrupt the typed shape `integration.py`/`red_report.py` consume. Implemented
+in `engine/report_io.py` (`nuclei_candidates` param, getattr duck-typing so
+report_io stays decoupled from `engine.nuclei_agent`) + `modules/recon.py`; covered
+by `tests/test_report_io.py`.

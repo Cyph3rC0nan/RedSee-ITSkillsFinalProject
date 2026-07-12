@@ -33,7 +33,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | SQLi agent-driven vertical slice (replace static stub) | Done |
 | Sandbox + scope-gating harness for the slice | Done |
 | Generalize agent pattern to xss / idor / auth | In progress (xss done, idor/auth not started) |
-| nuclei template-scan agent (CVEs / misconfig / exposures) | In progress (engine + sandbox done; Finding mapping + output wiring next) |
+| nuclei template-scan agent (CVEs / misconfig / exposures) | Done offline (engine + sandbox + SARIF/JSON/run.json output via report_io + standalone modules/recon.py); only a live end-to-end run is pending, blocked by env — see HANDOFF |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -53,6 +53,27 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-12 — nuclei output surfacing (SARIF / JSON / run.json)
+
+**Done:** Surfaced nuclei candidates into the output layer WITHOUT touching the
+frozen `schemas.py` or the typed `findings_<id>.json` (decision D-017).
+`engine/report_io.py`'s `write_outputs` gained an optional `nuclei_candidates=None`:
+found candidates append to the SARIF report (ruleId = template_id; nuclei-severity →
+SARIF level), the full raw list writes to `nuclei_<id>.json`, and a `nuclei` summary
+block (found/clean/error + by-severity) is added to `run_<id>.json`. With the param
+omitted, all existing SQLi/XSS output is byte-for-byte unchanged (proven by diffing
+against HEAD). Added `modules/recon.py` (`run_recon_scan`) chaining `run_nuclei_agent`
+→ `write_outputs`, deliberately NOT wired into `integration.py`'s resolver.
+`tests/test_report_io.py` (11 tests, real captured JSONL); `git diff --stat schemas.py`
+empty. New decision D-017.
+
+**Next:** A live end-to-end `modules.recon` run (blocked by the orphaned host-local
+sandbox networking state — see `HANDOFF.md`). Then idor/auth agents, and the
+long-outstanding live `scan_xss()` smoke.
+
+**Blockers:** Same host-local sandbox-networking blocker as the nuclei agent (leftover
+docker network + iptables rules from a crashed run) — see `HANDOFF.md`.
 
 ### 2026-07-12 — nuclei template-scan agent (third agent)
 

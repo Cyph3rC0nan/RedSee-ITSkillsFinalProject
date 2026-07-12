@@ -1,60 +1,56 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-12T12:05:00Z
-**Current milestone:** engine/nuclei_agent.py — sandboxed, agent-driven nuclei detection (agent + offline tests only; branch `feat/nuclei`). Third scanning agent, parallel to SQLi/XSS.
+**Last updated:** 2026-07-12T13:30:00Z
+**Current milestone:** nuclei candidates surfaced into SARIF + nuclei_<id>.json + run.json (NOT typed Findings) via engine/report_io.py; standalone modules/recon.py entry. Branch `feat/nuclei`.
 
 ## Next step
-Prompt 3: map NucleiCandidate(status="found") -> schema-valid Finding + output wiring
-(engine.finding_map + report_io, and a modules/ entry point / integration.py resolver).
-Open design Q carried over: nuclei covers CVEs/misconfig/exposed-panels, which do NOT
-map 1:1 to the 4 frozen Finding types (SQLi/XSS/IDOR/BrokenAuth) — decide the mapping
-(reuse a type vs. request a new one; note schemas.py finding types are a frozen contract).
-Map nuclei severity (info/low/medium/high/critical) -> exact Critical/High/Medium/Low.
-Still outstanding from earlier: a live `scan_xss()` smoke through modules.xss.
+The nuclei track is functionally complete end-to-end EXCEPT a live run (blocked by the
+host-local sandbox networking cruft — see blockers). Options next: (a) get a green live
+`modules.recon` run once the orphaned iptables/network state is cleaned; (b) a live
+`scan_xss()` smoke through modules.xss (long-outstanding); (c) idor/auth agents. Note the
+settled decision (D-017): nuclei results are BROADER than the frozen Finding enum and
+DELIBERATELY never become typed Findings / never enter findings_<id>.json — do NOT
+"finish" that mapping.
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
-- Built engine/nuclei_agent.py — the template-scan agent, a parallel to
-  engine/agent.py (SQLi) / engine/xss_agent.py (XSS), driving nuclei. run_nuclei_agent(
-  targets, *, ..., auth_cookie) -> NucleiAgentResult; NucleiCandidate/NucleiAgentResult
-  (NOT in schemas.py). ONE harness-owned run_nuclei tool: model supplies only
-  target/tags(safe allowlist)/note — NEVER flags. Harness fixes -jsonl/-omit-raw/
-  -disable-update-check/-no-interactsh, -t /opt/nuclei-templates, -severity
-  low,medium,high,critical (excludes info), -exclude-tags dos,intrusive,fuzz,brute,oob.
-  _parse_nuclei_output (JSONL) is the SOLE source of status="found"; sandbox/timeout/
-  non-zero -> status="error" (never a false clean/found). Smuggling a forbidden flag/tag
-  via tags/target/note RAISES (_sanitize_tags/_validate_target/_assert_note_safe +
-  _assert_no_forbidden_flags header-injection guard). stopped_reason {done,
-  completed_by_ladder, budget, max_iterations}, bounded completion pass. 34 offline tests
-  vs REAL captured DVWA JSONL (tests/fixtures/nuclei_dvwa_real.jsonl); regression 105
-  passed/2 skipped; grep proves run_in_sandbox-only. Live smoke reached the sandbox and
-  correctly surfaced the host-local self-test failure as status="error" (see blockers) — 2026-07-12
-- REQUIRED Dockerfile fix for real nuclei scans: moved nuclei's XDG_CONFIG_HOME/
-  XDG_CACHE_HOME from the read-only /opt bake to **/tmp/.config //tmp/.cache**. Reason:
-  -tv/-version only READ config (so the /opt read-only bake passed Prompt 1), but a REAL
-  scan WRITES config.yaml/reporting-config.yaml + cache index.gob and died with
-  `FTL could not create config file` on the --read-only rootfs. engine/sandbox.py
-  (frozen) mounts exactly one writable path — `--tmpfs /tmp` + HOME=/tmp — so the config
-  must live there: the baked /tmp files serve read-only -tv/-version (no tmpfs), and the
-  tmpfs overlay makes them writable for a real scan. Verified all 4 states: -version/-tv
-  read-only pass; a real scan under the EXACT sandbox flags finds `configuration-listing`
-  (medium); sqlmap/dalfox unaffected. engine/sandbox.py NOT touched — 2026-07-12
-- Installed pinned nuclei v3.11.0 + nuclei-templates v10.4.5 into the Dockerfile (tool
-  install), sha256-verified. Pre-baked a valid-but-empty uncover provider-config.yaml
-  (`{}`) since uncover creates it on every startup. docs/nuclei_sandbox.md has the full
-  transcript + pin provenance — 2026-07-12
+- Surfaced nuclei candidates into the output layer WITHOUT touching schemas.py or
+  findings_<id>.json (settled decision D-017). engine/report_io.py: write_outputs gained
+  an optional `nuclei_candidates=None` param — found ones append to the SARIF report
+  (ruleId=template_id, level from nuclei severity: critical/high->error, medium->warning,
+  low/info->note; rules[] for distinct template_ids), the full raw list writes to
+  nuclei_<id>.json, and a nuclei summary block (found/clean/error + by-severity) is added
+  to run_<id>.json. findings_<id>.json stays typed-Finding-only. report_io duck-types the
+  candidates via getattr (no import of engine.nuclei_agent); _endpoint_status_summary now
+  falls back endpoint_url->target so a NucleiAgentResult can be the agent_result. When
+  nuclei_candidates is omitted, output is BYTE-FOR-BYTE identical to before (proven by
+  diffing against HEAD's report_io). New modules/recon.py (run_recon_scan) chains
+  run_nuclei_agent -> write_outputs(nuclei_candidates=...); NOT wired into integration.py.
+  tests/test_report_io.py (11 tests, real captured JSONL); 43 pass w/ test_nuclei_agent;
+  regression 42 passed/1 skipped; `git diff --stat schemas.py` empty — 2026-07-12
+- Built engine/nuclei_agent.py — template-scan agent parallel to SQLi/XSS, driving
+  nuclei. run_nuclei_agent -> NucleiAgentResult; NucleiCandidate/NucleiAgentResult local.
+  ONE harness-owned run_nuclei tool (model gives target/tags-allowlist/note, never flags);
+  fixed detection-only profile (-jsonl/-omit-raw/-disable-update-check/-no-interactsh,
+  bundled templates, info-severity floor, exclude dos/intrusive/fuzz/brute/oob).
+  status="found" from parsed JSONL only; sandbox/timeout/non-zero -> "error". Smuggling
+  raises. 34 offline tests vs REAL captured DVWA JSONL; grep proves run_in_sandbox-only.
+  Committed f4cf76b — 2026-07-12
+- Dockerfile: installed pinned nuclei v3.11.0 + templates v10.4.5 (sha256-verified) and
+  moved nuclei's XDG config/cache from the read-only /opt bake to /tmp/.config //tmp/.cache.
+  Reason: -tv/-version only READ config, but a REAL scan WRITES config + cache and died
+  `FTL could not create config file` on the read-only rootfs. The frozen sandbox mounts
+  one writable path (`--tmpfs /tmp` + HOME=/tmp), so config must live there: baked /tmp
+  files serve read-only -tv/-version, the tmpfs overlay makes them writable for a real
+  scan. Verified all 4 states; sandbox.py untouched. Committed f4cf76b — 2026-07-12
 - Mapped XssCandidate -> Finding(type="XSS"); made modules/xss.scan_xss agent-backed
   (mirrors SQLi). engine/finding_map.py: xss_candidate_to_finding (injectable-only,
   severity always "High"). engine/report_io.py generalized (agent-type-agnostic SARIF
   ruleId from Finding.type; getattr for missing .depth) — SQLi output byte-for-byte
   unchanged. _HAS_AGENT resolver + _agent_scan_xss falls back to _legacy_scan_xss. New
   tests/test_xss_finding_map.py + offline tests; zero regressions — 2026-07-11
-- Fixed the sandbox host-local reachability (hairpin/NAT) in engine/sandbox.py: host-local
-  targets route via the bridge GATEWAY (not the public IP); host-PUBLISHED ports (DVWA
-  :8080) also need a torn-down nat/PREROUTING DNAT bypass. Egress still gateway:port +
-  ESTABLISHED only; self-test unchanged. Verified live for :3000 and :8080 — 2026-07-11
 
 ## Key decisions
 - Host-local target detection = loopback OR the resolved IP is one of THIS host's own
@@ -97,6 +93,12 @@ nothing
   "Cookie: <val>"` — the ONLY -H permitted (any other -H = injection, trips the guard).
   stopped_reason has NO "error" (like XSS): a failed scan is only per-candidate
   status="error". Default tags = tech,exposure,misconfig when model gives none.
+- D-017 (settled): nuclei results are BROADER than the frozen Finding enum, so they are
+  surfaced into SARIF + nuclei_<id>.json + run.json ONLY — never typed Findings, never in
+  findings_<id>.json; schemas.py NOT modified. write_outputs's `nuclei_candidates` is
+  additive & optional (omitted => byte-for-byte unchanged); report_io stays decoupled
+  (getattr duck-typing, no nuclei import). modules/recon.py is the standalone entry,
+  deliberately NOT in integration.py's resolver.
 
 ## Open issues / blockers
 - nuclei_agent has NO Finding mapping / output wiring yet — that's Prompt 3 (see Next step).
@@ -119,22 +121,20 @@ nothing
 - The DNAT bypass assumes docker userland-proxy is enabled (docker-proxy for :8080 IS
   running on this host, so the bypass precondition holds — the blocker above is stale rules).
 
-## Changed files (this session)
-- engine/nuclei_agent.py (NEW) — the nuclei agent (run_nuclei_agent + NucleiCandidate/
-  NucleiAgentResult + run_nuclei tool + parser + guards). Imports generic helpers from
-  engine.agent; nuclei runs ONLY via run_in_sandbox (grep-verified, no raw subprocess).
-- prompts/nuclei_agent.txt (NEW) — system prompt, mirrors prompts/xss_agent.txt.
-- tests/test_nuclei_agent.py (NEW) — 34 offline tests (mock LLM + monkeypatched
-  run_in_sandbox); tests/fixtures/nuclei_dvwa_real.jsonl (NEW) — REAL captured nuclei
-  JSONL (configuration-listing/tech-detect/ssh-sha1-hmac-algo from DVWA).
-- docker/sandbox/Dockerfile — moved nuclei XDG config/cache from /opt to /tmp/.config //
-  tmp/.cache so real scans can write under the sandbox's tmpfs (see Key decisions). The
-  v3.11.0/v10.4.5 pins, templates at /opt/nuclei-templates, and the uncover-config bake
-  are unchanged; only the config-dir location moved.
-- docs/nuclei_sandbox.md — updated for the /tmp config-dir design + an "agent layer"
-  section (the file was new last session).
-- engine/sandbox.py, schemas.py, modules/*, integration.py, build.sh, engine/agent.py,
-  engine/xss_agent.py — all UNTOUCHED (verified). schemas.py NOT modified.
+## Changed files (this session — nuclei output surfacing)
+- engine/report_io.py — write_outputs gained optional `nuclei_candidates=None`;
+  found -> SARIF (ruleId=template_id, nuclei-severity level map) + nuclei_<id>.json +
+  run.json nuclei summary. Duck-typed via getattr; _endpoint_status_summary falls back
+  endpoint_url->target. Omitted => byte-for-byte identical (proven vs HEAD).
+- modules/recon.py (NEW) — run_recon_scan chains run_nuclei_agent -> write_outputs; NOT
+  in integration.py's resolver, no scan_<vuln> signature.
+- tests/test_report_io.py (NEW) — 11 tests (real captured JSONL): found->SARIF+json+
+  run summary, findings_<id>.json nuclei-free, omitted==unchanged, secret scrub intact.
+- (earlier this branch: engine/nuclei_agent.py, prompts/nuclei_agent.txt,
+  tests/test_nuclei_agent.py, tests/fixtures/nuclei_dvwa_real.jsonl, docker/sandbox/
+  Dockerfile, docs/nuclei_sandbox.md — all committed in f4cf76b.)
+- schemas.py, engine/sandbox.py, engine/agent.py, engine/xss_agent.py, modules/sqli.py,
+  modules/xss.py, integration.py, build.sh — UNTOUCHED (verified). schemas.py NOT modified.
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first
