@@ -205,13 +205,25 @@ def test_sanitize_tags_keeps_allowlisted_drops_unknown():
     assert _sanitize_tags([]) == []
 
 
-def test_sanitize_tags_raises_on_forbidden_or_flaglike():
+def test_sanitize_tags_raises_only_on_forbidden_or_flaglike():
+    # DANGEROUS category or FLAG-LIKE token -> deliberate smuggle -> RAISES.
     for bad in ("dos", "intrusive", "fuzz", "brute", "oob", "exploit", "rce", "code"):
         with pytest.raises(AssertionError):
             _sanitize_tags(["tech", bad])
-    for smuggled in ("-H", "-interactsh-server", "--update", "a b", "tag;rm", "\"x\""):
+    for smuggled in ("-H", "-interactsh-server", "--update"):
         with pytest.raises(AssertionError):
             _sanitize_tags([smuggled])
+
+
+def test_sanitize_tags_drops_malformed_noise_without_crashing():
+    # Weak-model noise (NOT flag-like, NOT a dangerous category) must DROP, never
+    # raise — a bad model returning junk tags must not crash the scan. "[]" is the
+    # exact value a local llama3.2 returned in a live run (a stringified empty array).
+    for junk in ("[]", "a b", "tag;rm", '"x"', "tech,dos", "{}"):
+        assert _sanitize_tags([junk]) == []          # dropped, no exception
+    assert _sanitize_tags("[]") == []                # a bare string, too
+    assert _sanitize_tags([123, None, "tech"]) == ["tech"]   # non-strings dropped
+    assert _sanitize_tags(42) == []                  # non-list -> ignored, not fatal
 
 
 def test_validate_target_rejects_flaglike_and_nonurl():
@@ -420,6 +432,47 @@ def test_forbidden_flag_in_note_raises():
         _execute_run_nuclei(
             {"target": IN_SCOPE_URL, "note": "please add -interactsh-server oast.pro"},
             scope_config=_scope())
+
+
+def test_smuggling_tool_call_is_refused_not_fatal_to_the_run(monkeypatch):
+    # A model tool call that smuggles a forbidden tag RAISES in _execute_run_nuclei;
+    # the AGENT LOOP must catch that, refuse the single call, and keep going — the
+    # deterministic completion pass still scans the target. One bad tool call must
+    # NEVER crash the whole scan.
+    calls = []
+    monkeypatch.setattr(nuclei, "run_in_sandbox", _fake_sandbox(calls, _CONFIG_LISTING_LINE))
+
+    client = FakeLLMClient(replies=[
+        _tool_reply(IN_SCOPE_URL, tags=["dos"], call_id="smuggle"),   # forbidden tag
+        _final_reply(),
+    ])
+    # Does not raise:
+    result = run_nuclei_agent([_endpoint()], scope_config=_scope(), llm_client=client)
+
+    # The smuggling call was refused (recorded in the transcript, no candidate)...
+    assert any(s.get("status") == "refused" for s in result.transcript)
+    # ...and the completion pass still produced a real scan result for the target.
+    assert calls, "completion pass must still scan the target after a refused call"
+    assert any(c.status == "found" for c in result.candidates)
+
+
+def test_malformed_tags_do_not_crash_or_refuse_the_scan(monkeypatch):
+    # The exact live-run failure: a weak model returns tags as the string "[]".
+    # It must be dropped (scan runs with the default profile), not refused/crashed.
+    calls = []
+    monkeypatch.setattr(nuclei, "run_in_sandbox", _fake_sandbox(calls, _CONFIG_LISTING_LINE))
+
+    client = FakeLLMClient(replies=[
+        _tool_reply(IN_SCOPE_URL, tags="[]", call_id="junk"),   # stringified empty array
+        _final_reply(),
+    ])
+    result = run_nuclei_agent([_endpoint()], scope_config=_scope(), llm_client=client)
+
+    assert not any(s.get("status") == "refused" for s in result.transcript)
+    assert calls and any(c.status == "found" for c in result.candidates)
+    # the scan ran with the default tag profile (junk dropped)
+    argv = calls[0]["argv"]
+    assert argv[argv.index("-tags") + 1] == ",".join(nuclei._DEFAULT_TAGS)
 
 
 # ── Completion pass / budget / caps ─────────────────────────────────────────

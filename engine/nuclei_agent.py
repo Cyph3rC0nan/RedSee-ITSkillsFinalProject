@@ -213,32 +213,43 @@ def _assert_no_forbidden_flags(argv: list[str]) -> list[str]:
 def _sanitize_tags(tags) -> list[str]:
     """Validate model-supplied template tags against the safe allowlist.
 
-    Default-deny with an explicit hard-deny: a dangerous tag (dos/intrusive/fuzz/
-    brute/oob/exploit/...) or a flag-like/malformed token (e.g. a smuggled '-H' or
-    '-interactsh-url') RAISES — that is a smuggling attempt. A clean but non-allowlisted
-    tag is silently dropped (the scan falls back to the default profile). Returns the
-    de-duplicated list of accepted allowlist tags.
+    Two distinct outcomes, on purpose:
+      * A DELIBERATE smuggling attempt RAISES — a flag-like token (leading '-',
+        e.g. a smuggled '-H'/'-interactsh-server') or a hard-denied dangerous
+        category (dos/intrusive/fuzz/brute/oob/exploit/rce/code/...). These are
+        security events, surfaced loudly.
+      * Everything else that is not a clean allowlist tag is DROPPED, not fatal:
+        a non-string entry, an unknown-but-clean tag, or malformed model noise
+        (e.g. a weak model passing the literal string "[]", "a b", "tag;rm"). Such
+        junk can never reach the argv (it is not in the allowlist), so it is safe
+        to ignore — crashing the whole scan over model noise would be wrong.
+
+    Returns the de-duplicated list of accepted allowlist tags (possibly empty, in
+    which case the caller falls back to the default detection profile).
     """
     if tags is None:
         return []
     if isinstance(tags, str):
         tags = [tags]
     if not isinstance(tags, (list, tuple)):
-        raise AssertionError(f"nuclei tags must be a list, got {type(tags).__name__}")
+        # A non-list tags value is model noise, not a smuggle — ignore it.
+        return []
 
     accepted: list[str] = []
     for raw in tags:
         if not isinstance(raw, str):
-            raise AssertionError(f"nuclei tag must be a string, got {raw!r}")
+            continue                              # noise — drop
         tag = raw.strip().lower()
         if not tag:
             continue
-        # Smuggling guard: flag-like / malformed tokens and hard-denied tags RAISE.
-        assert _TAG_RE.fullmatch(tag), f"forbidden/malformed nuclei tag: {raw!r}"
+        # Hard-deny (RAISE): a flag-like token or a dangerous template category is
+        # a deliberate injection attempt, never innocent noise.
+        assert not tag.startswith("-"), f"forbidden/flag-like nuclei tag: {raw!r}"
         assert tag not in _FORBIDDEN_TAGS, f"forbidden nuclei tag: {raw!r}"
-        if tag in _ALLOWED_TAGS and tag not in accepted:
+        # Keep only clean, allowlisted tags; unknown/malformed tokens simply drop
+        # (they cannot reach the argv, so they are harmless).
+        if _TAG_RE.fullmatch(tag) and tag in _ALLOWED_TAGS and tag not in accepted:
             accepted.append(tag)
-        # else: clean-but-unknown tag — dropped, not fatal.
     return accepted
 
 
@@ -663,8 +674,19 @@ def run_nuclei_agent(targets: list, *, max_iterations: int = 6, scope_config=Non
                     "error": f"scan ceiling reached for {raw_target}; no further runs",
                 }, []
             else:
-                tool_result, cands = _execute_run_nuclei(
-                    arguments, scope_config=scope_config, auth_cookie=auth_cookie)
+                # A deliberate smuggling attempt (forbidden tag / flag-like target /
+                # forbidden flag in the note) RAISES in the validators — refuse THIS
+                # one tool call and let the model try again; never crash the whole
+                # scan over one bad tool call. The completion pass still runs.
+                try:
+                    tool_result, cands = _execute_run_nuclei(
+                        arguments, scope_config=scope_config, auth_cookie=auth_cookie)
+                except AssertionError as exc:
+                    tool_result, cands = {
+                        "ok": False,
+                        "status": "refused",
+                        "error": f"refused unsafe run_nuclei arguments: {exc}",
+                    }, []
                 if cands:
                     candidates.extend(cands)
                     ran = tool_result.get("status") in ("found", "clean", "error")
