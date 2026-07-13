@@ -1,19 +1,41 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-13T17:00:00Z
-**Current milestone:** deterministic sandboxed ffuf content-discovery (engine/recon_tools.py's run_ffuf), chained off httpx's live URLs, surfaced into the SAME recon channel as httpx/tlsx. Branch `feat/nuclei`, all uncommitted.
+**Last updated:** 2026-07-13T18:30:00Z
+**Current milestone:** unified scan orchestrator (`modules/scan.py`'s `run_scan`) — crawl -> vuln agents (sqli, xss) -> recon (nuclei, httpx, tlsx, ffuf) -> aggregate into ONE `outputs/scan_<id>.json`, alongside the existing per-tool outputs, all sharing one scan_id. Branch `feat/nuclei`, uncommitted.
 
 ## Next step
-Deterministic recon trio (httpx/tlsx/ffuf) is done, chained through `modules/recon.py`.
-Options next: (a) idor/auth agents (long-outstanding, not started); (b) a live `scan_xss()`
-smoke through the full modules.xss public API (long-outstanding). Everything this session is
-UNCOMMITTED — commit when ready (engine/recon_tools.py's run_ffuf + modules/recon.py's
-httpx->ffuf chaining + tests/test_ffuf_recon.py + tests/fixtures/ffuf_localhost_real.jsonl).
+Orchestrator is COMPLETE and live-proven — commit it (modules/scan.py + tests/test_orchestrator.py;
+outputs are gitignored). The NEXT prompt wires modules.scan into integration.py/app.py
+(deliberately NOT done here). Longer-standing: idor/auth agents; a full-findings live run
+(agents actually driving sqlmap/dalfox) if ever needed — use a real REDSEE_LLM_MAX_USD and
+expect 10-40 min.
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
+- Built `modules/scan.py` — the unified scan orchestrator (aggregation spine).
+  `run_scan(target_url, *, scope_config=None, scan_id=None, out_dir="outputs")` gates FIRST
+  (require_authorization + assert_in_scope; refuses before writing anything), then runs
+  crawl -> scan_sqli + scan_xss (typed Findings) -> run_nuclei_agent + run_httpx/tlsx/ffuf
+  (candidates/observations, ffuf chained off httpx live URLs) -> writes ONE
+  `outputs/scan_<id>.json` unifying findings + recon + a tools_run table + severity/summary
+  rollup, ALONGSIDE (never replacing) the existing per-tool outputs via the SAME reused
+  `write_outputs` under ONE shared bare scan_id (fixes AGENTS.md's "two differently-named
+  findings files" limitation). Each stage is wrapped: a tool that RAISES -> "error" tools_run
+  entry, scan continues, nothing fabricated; a recon/nuclei tool that returns status="error"
+  results (they don't raise) is honestly classified as "error" (not a misleading "ran, 0")
+  via `_classify_results`. schemas.py NOT touched (unified record is a NEW json artifact, not
+  a schema type); report_io reused untouched (write_outputs + its secret scrubber + its
+  per-tool serializers). Chose modules/scan.py over engine/orchestrator.py because it imports
+  BOTH modules (sqli/xss) and engine layers, and engine must not depend on modules. 9 offline
+  tests in tests/test_orchestrator.py (happy path, tool-error isolation, all-errored-recon
+  classification, crawl-fail-skips-vuln-agents, unauthorized/out-of-scope refusal + no
+  outputs, per-tool byte-for-byte match vs a direct write_outputs, secret scrub); 124-test
+  full regression green. LIVE-PROVEN: real Juice Shop run (scan_id 4caea79d, budget-0 fast
+  path) — all 7 tools ran 0-error, httpx fingerprint + 9 ffuf paths in ONE scan_<id>.json
+  alongside the shared-id per-tool files; llm block secret-scrubbed. NOT wired into
+  integration.py — 2026-07-13
 - Added `run_ffuf` to engine/recon_tools.py — deterministic sandboxed content discovery,
   mirroring run_httpx/run_tlsx's exact shape (scope-gate-first, sandbox-only, no LLM/agent
   loop/budget). **Found + fixed a real bug via the mandated live smoke test**: `-mc`
@@ -38,16 +60,30 @@ nothing
   fingerprint + TLS/cert inspection, no LLM/agent loop. `ReconObservation` (local, not
   schemas.py) has status={observed,error,out_of_scope}, no "clean" status. tlsx derives
   host/port via the SAME formula run_in_sandbox uses internally — 2026-07-13
-- Surfaced nuclei candidates into report_io WITHOUT touching schemas.py or
-  findings_<id>.json (D-017). `write_outputs` gained optional `nuclei_candidates=` — SARIF +
-  nuclei_<id>.json + run.json summary. New standalone modules/recon.py — 2026-07-12
 
 ## Key decisions
+- The unified scan orchestrator lives at `modules/scan.py`, NOT `engine/orchestrator.py`
+  (the task offered either). It imports BOTH the modules layer (sqli/xss) and the engine
+  layer (recon/nuclei), and the repo's dependency direction is modules -> engine (nothing in
+  engine/ imports modules/). Placing it in engine/ would invert that layering. Live entry is
+  therefore `python -m modules.scan`. The unified file is `scan_<id>.json`; per-tool files are
+  `findings_<id>.json`/`run_<id>.json`/`nuclei_<id>.json`/`recon_<id>.json` — ALL sharing ONE
+  bare scan_id (hex, no prefix), which is the fix for the "two differently-named findings
+  files" limitation. NOT wired into integration.py's resolver (next prompt).
+- Fast live-proof technique for the orchestrator: set `REDSEE_LLM_MAX_USD=0` so the sqli/xss/
+  nuclei AGENTS hit a budget stop immediately and suppress their completion pass (verified:
+  all three guard it with `if entered_reason != "budget"`), meaning ZERO per-endpoint
+  sandboxed sqlmap/dalfox/nuclei runs — while the deterministic httpx/tlsx/ffuf still probe
+  the target live. Turns a 10-40 min full agent run into a ~3-4 min real recon-backed
+  `scan_<id>.json`. A FULL live run (agents actually driving sqlmap/dalfox per endpoint) is
+  inherently slow: ~21 Juice-Shop endpoints x 2 agents x (local-LLM latency + sandbox
+  setup/self-test/teardown + tool runtime).
 - D-017 (recon results -> SARIF + dedicated JSON + run.json, never typed Findings/
   schemas.py) now covers nuclei, httpx/tlsx, AND ffuf — `report_io` stays fully decoupled
   from every source module via getattr duck-typing, so adding ffuf required ZERO report_io
   changes. modules/recon.py is the standalone entry for all four tools, not in
-  integration.py's resolver.
+  integration.py's resolver. The orchestrator reuses this same write_outputs call unchanged
+  (proven byte-for-byte vs a direct call in tests/test_orchestrator.py).
 - D-019/D-020 pattern ("pin/configure to avoid a problematic real-world behavior, verified
   against a BUILT image + a real target, not assumed") now has a THIRD instance: ffuf's fixed
   profile MUST include `-ac` (auto-calibration), not just `-mc` status-code matching — proven
@@ -76,28 +112,37 @@ nothing
 - Not yet run: a live `scan_xss()` call through the full modules.xss public API.
 - `_SENSITIVE_PATH_MARKERS` (ffuf severity) is a small, deliberately conservative hand-picked
   list — extend it if a real engagement surfaces another exposure pattern worth Medium.
-- outputs/*.sarif from ad-hoc live smoke runs got swept into a prior commit by a broad
-  `git add -A` (`.gitignore` covers `outputs/*.json` but NOT `.sarif`); this session deleted
-  the stale ones from disk as cleanup but did NOT commit that deletion — review `git status`
-  before your next commit.
+- Env note (this session): the Juice Shop container got stuck DETACHED from all networks
+  (empty `NetworkSettings.Networks`, no published port) after a `pkill` interrupted a
+  `run_in_sandbox` teardown mid-op — a `docker restart` did NOT fix it. Recreated it clean:
+  `docker rm -f redsee-juiceshop && docker run -d --name redsee-juiceshop --restart
+  unless-stopped -p 3000:3000 bkimminich/juice-shop` (stateless demo, no volumes — safe). If
+  the live target is unreachable, check `docker ps` shows a real `0.0.0.0:3000->3000/tcp`
+  mapping (not an empty Ports column) before assuming a code/networking bug.
+- Leaked host iptables rules exist from that killed run (`sudo iptables -S DOCKER-USER |
+  grep 172.` shows appended ACCEPT/DROP for old sandbox subnets 172.18/172.19). They are
+  HARMLESS to fresh sandbox runs (run_in_sandbox INSERTS its rules at the TOP, above these
+  appended ones — proven: scan_id 4caea79d's self-test passed and httpx/tlsx/ffuf all
+  reached the target). Not flushed autonomously (host-firewall change). Remove with targeted
+  `iptables -D` if tidying is wanted; not required for correctness.
+- To do a lightweight live orchestrator smoke WITHOUT the slow per-endpoint vuln agents, set
+  `REDSEE_LLM_MAX_USD=0` (agents budget-stop instantly; httpx/tlsx/ffuf still run live).
 - This dev sandbox lacks `markdown`/`weasyprint` — red_report.py/blue_report.py + their tests
   fail to import here (pre-existing, unrelated).
 - Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming
   DVWA (:8080) or Juice Shop (:3000) is up.
 
-## Changed files (this session — ffuf content-discovery runner + httpx->ffuf chaining)
-- engine/recon_tools.py — added `run_ffuf` + argv builder (`_build_ffuf_argv`,
-  `_build_ffuf_target_url`, `_ffuf_rate`), `_FFUF_FORBIDDEN`, sensitive-path classifier
-  (`_is_sensitive_path`/`_SENSITIVE_PATH_MARKERS`), `_ffuf_observation_for`. `ReconObservation`
-  gained "ffuf" as a third `tool` value (just a string, no schema change).
-- modules/recon.py — added `_live_urls_from_httpx`, wired httpx -> ffuf into
-  `run_recon_scan`.
-- engine/report_io.py — UNTOUCHED (already fully generic for the recon channel).
-- tests/test_ffuf_recon.py (NEW, 23 tests) + tests/fixtures/ffuf_localhost_real.jsonl (NEW,
-  real captured JSON).
-- schemas.py, engine/sandbox.py, engine/nuclei_agent.py, engine/agent.py, engine/xss_agent.py,
-  modules/sqli.py, modules/xss.py, modules/idor.py, integration.py, docker/sandbox/Dockerfile,
-  build.sh — UNTOUCHED (verified via `git status`/`git diff --stat`).
+## Changed files (this session — unified scan orchestrator)
+- modules/scan.py (NEW) — `run_scan` orchestrator + helpers (`_safe` per-tool wrapper,
+  `_classify_results` honest recon/nuclei status rollup, `_live_urls_from_httpx`,
+  `_severity_rollup`, `_build_llm_meta`, `_redsee_version`, `_EmptyAgentResult`). Opt-in
+  `__main__` (`python -m modules.scan`). NOT wired into integration.py.
+- tests/test_orchestrator.py (NEW, 9 tests) — fully mocked (crawl + every tool doubled at the
+  modules.scan boundary; a guard proves run_in_sandbox is never reached).
+- schemas.py, integration.py, engine/*, engine/report_io.py, modules/sqli.py, modules/xss.py,
+  modules/recon.py, docker/sandbox/* — UNTOUCHED (verified via `git status`/`git diff --stat`;
+  schemas.py + integration.py diffs empty). The ffuf work from earlier this session is already
+  committed (70d964e, 8bdeac8).
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first

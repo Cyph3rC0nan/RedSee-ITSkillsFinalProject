@@ -36,6 +36,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | nuclei template-scan agent (CVEs / misconfig / exposures) | Done — engine + sandbox + SARIF/JSON/run.json output via report_io + standalone modules/recon.py; live end-to-end run confirmed against Juice Shop — see HANDOFF |
 | httpx + tlsx deterministic recon (fingerprint / TLS-cert inspection) | Done — engine/recon_tools.py + report_io recon channel + modules/recon.py extension; live end-to-end run confirmed — see HANDOFF |
 | ffuf + pinned wordlist (directory/file brute-force) | Done — pinned sandbox install (v2.1.0 + SecLists common.txt) + deterministic run_ffuf runner, chained off httpx's live URLs; live end-to-end run confirmed — see HANDOFF |
+| Unified scan orchestrator (crawl→vuln agents→recon→one scan_<id>.json) | Done — modules/scan.py run_scan; aggregates findings + recon under ONE shared scan_id alongside the existing per-tool outputs; schemas.py + integration.py untouched; 9 offline tests + live Juice Shop run confirmed. NOT yet wired into integration.py/app.py (next) — see HANDOFF |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -55,6 +56,42 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-13 — unified scan orchestrator (modules/scan.py)
+
+**Done:** Added `modules/scan.py` — the aggregation spine. `run_scan(target_url, *,
+scope_config=None, scan_id=None, out_dir="outputs")` runs ONE authorized target end-to-end
+(crawl → scan_sqli + scan_xss → run_nuclei_agent + run_httpx/tlsx/ffuf, ffuf chained off
+httpx's live URLs) and writes ONE new `outputs/scan_<id>.json` unifying findings + recon +
+a `tools_run` status table + a severity/summary rollup — ALONGSIDE (never replacing) the
+existing per-tool outputs, all keyed by ONE shared bare scan_id (the fix for AGENTS.md's
+"two differently-named findings files" limitation). Gating (require_authorization +
+assert_in_scope) runs FIRST — an unauthorized/out-of-scope target is refused before anything
+is written. Each stage is wrapped: a tool that RAISES → an "error" tools_run entry, scan
+continues, nothing fabricated; a recon/nuclei tool that returns status="error" results (they
+don't raise) is honestly classified as "error" via `_classify_results` (not a misleading
+"ran, 0"). `schemas.py` is untouched (the unified record is a NEW json artifact, not a schema
+type); `engine/report_io.py` is reused unchanged (write_outputs + its secret scrubber + its
+per-tool serializers), proven byte-for-byte identical to a direct write_outputs call.
+
+Chose `modules/scan.py` over `engine/orchestrator.py` (the task offered either): the spine
+imports BOTH the modules layer (sqli/xss) and the engine layer (recon/nuclei), and the repo's
+dependency direction is modules → engine (nothing in engine/ imports modules/), so engine/
+placement would invert the layering. Live entry is `python -m modules.scan`. 9 offline tests
+in `tests/test_orchestrator.py` (happy path, tool-error isolation, all-errored-recon
+classification, crawl-fail-skips-vuln-agents, unauthorized + out-of-scope refusal writing no
+outputs, per-tool byte-for-byte match, secret scrub); 124-test full regression green;
+`git diff --stat schemas.py integration.py` empty. LIVE-PROVEN against Juice Shop (scan_id
+4caea79d): all 7 tools ran 0-error, httpx fingerprint + 9 ffuf-discovered paths unified into
+one scan_<id>.json with the shared-id per-tool files, `llm` block secret-scrubbed. Used the
+`REDSEE_LLM_MAX_USD=0` fast path (agents budget-stop instantly, skipping the slow
+per-endpoint sandboxed sqlmap/dalfox) so the live proof took ~2 min instead of 10-40.
+
+**Next:** Wire `modules.scan` into `integration.py`/`app.py` (the NEXT prompt — deliberately
+not done here). Then idor/auth agents.
+
+**Blockers:** None. (Env aside: the Juice Shop container had to be recreated mid-session
+after a killed run left it network-detached — see HANDOFF; not a code issue.)
 
 ### 2026-07-13 — ffuf content-discovery runner, chained off httpx's live URLs
 

@@ -475,3 +475,49 @@ pin) — reinforces that offline unit tests against synthetic/throwaway-server
 fixtures are necessary but not sufficient; a live smoke test against a
 realistic target is required before a new tool integration can be trusted.
 Full detail in `HANDOFF.md` and `PROGRESS.md`'s 2026-07-13 session-log entry.
+
+---
+
+### D-022: The unified scan orchestrator lives in modules/scan.py, and unifies via ONE shared scan_id (not a new schema type)
+
+**Status:** Accepted
+**Date:** 2026-07-13
+**Decision:** The end-to-end scan orchestrator is `modules/scan.py`'s `run_scan`,
+NOT `engine/orchestrator.py`. It runs crawl → the two vuln agents (scan_sqli,
+scan_xss) → recon (nuclei, httpx, tlsx, ffuf) → aggregate, and writes ONE new
+`outputs/scan_<id>.json` unifying findings + recon + a per-tool `tools_run`
+status table, ALONGSIDE (never replacing) the existing per-tool outputs. Every
+artifact of one run shares ONE bare scan_id (`findings_<id>.json`,
+`run_<id>.json`, `nuclei_<id>.json`, `recon_<id>.json`, and the unified
+`scan_<id>.json`). The unified record is a plain JSON artifact — `schemas.py` is
+NOT extended with a new dataclass.
+**Why:**
+  * *Location*: the spine imports BOTH the modules layer (`modules.sqli`,
+    `modules.xss`) and the engine layer (`engine.recon_tools`,
+    `engine.nuclei_agent`). The repo's dependency direction is modules → engine
+    (verified: nothing in `engine/` imports `modules/`). Putting the spine in
+    `engine/` would invert that layering. `modules/recon.py` already established
+    the "run several things + write outputs" runner at the modules layer; this is
+    a strict superset of it, so it belongs beside it.
+  * *One shared scan_id*: directly fixes the AGENTS.md known-limitation where a
+    single run could emit two differently-named findings files (the agent path's
+    self-generated id vs. the pipeline id). The aggregate view is now keyed by one
+    id, and `scan_<id>.json` is the canonical unified record.
+  * *Not a schema type*: `schemas.py` is frozen (D-014); the unified record is
+    broader than any single Finding/Sitemap dataclass and is consumed by the
+    dashboard/blue-team tab as a JSON document, so it is written directly rather
+    than modeled as a frozen dataclass.
+  * *Resilience*: each stage is wrapped so a tool that raises becomes an "error"
+    entry (scan continues, nothing fabricated — D-013), and a recon/nuclei tool
+    that returns status="error" results (they don't raise) is classified honestly
+    as "error" rather than a misleading "ran, 0". `engine/report_io.py` is reused
+    unchanged (write_outputs + its secret scrubber + its serializers), proven
+    byte-for-byte identical to a direct call.
+**Alternatives / trade-off:** (a) `engine/orchestrator.py` — rejected for the
+layering inversion above, despite the task's example command naming it. (b) A new
+`schemas.py` `ScanRecord` dataclass — rejected: violates the frozen-schema
+contract and adds no value over a JSON document for a dashboard consumer. (c)
+Replacing the per-tool outputs with only the unified file — rejected: the per-tool
+files are already consumed elsewhere (red_report, app.py), so the spine is
+additive. NOT wired into `integration.py`'s resolver yet — that is a deliberate
+follow-up. Full detail in `HANDOFF.md` / `PROGRESS.md`'s 2026-07-13 entry.
