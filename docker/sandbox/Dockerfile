@@ -119,6 +119,40 @@ RUN curl -fsSL -o /tmp/nuclei-templates.tar.gz \
  && tar -xzf /tmp/nuclei-templates.tar.gz -C /opt/nuclei-templates --strip-components=1 \
  && rm -f /tmp/nuclei-templates.tar.gz
 
+# ffuf (Go web fuzzer / directory brute-forcer) — a single Go binary. Pinned to
+# v2.1.0, the current stable release (NOT `go install`/@latest, NOT apt — same
+# reproducibility rationale as sqlmap/Dalfox/nuclei above). Downloaded from the
+# official GitHub release and verified against a pinned sha256 (taken from
+# ffuf's own ffuf_2.1.0_checksums.txt for this exact tag; independently
+# re-downloaded and re-hashed locally before pinning here, not just trusting
+# the checksums file).
+ARG FFUF_VERSION=v2.1.0
+ARG FFUF_SHA256=fc2c82736c14dcbea4daf3d3cf3878c1c4773008ba45c2bc0fceba7d17b40bb5
+RUN curl -fsSL -o /tmp/ffuf.tar.gz \
+        "https://github.com/ffuf/ffuf/releases/download/${FFUF_VERSION}/ffuf_${FFUF_VERSION#v}_linux_amd64.tar.gz" \
+ && echo "${FFUF_SHA256}  /tmp/ffuf.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/ffuf.tar.gz -C /tmp \
+ && install -m 0755 /tmp/ffuf /usr/local/bin/ffuf \
+ && rm -f /tmp/ffuf.tar.gz /tmp/ffuf \
+ && ffuf -V
+
+# Wordlist for ffuf — a SINGLE small web-content list (NOT a full SecLists
+# clone, which is ~1GB). SecLists (github.com/danielmiessler/SecLists) is
+# MIT-licensed. Fetched as a raw file pinned to one exact commit (the commit
+# the `2026.1` tag resolved to at pin time — a commit sha is immutable even if
+# a tag is later moved/deleted, so this is the strongest pin `raw.githubusercontent.com`
+# supports for a single file), sha256-verified, independently re-downloaded and
+# re-hashed locally before pinning here. ~4750 lines of common directory/file
+# names, used offline with no `git clone`/network access at scan time.
+ARG SECLISTS_COMMIT=190c6f7bd58c847ceadfe57d9853592737f059e8
+ARG SECLISTS_TAG=2026.1
+ARG WORDLIST_SHA256=fc320bacd30d93f5080029912b93667cd739401f81634579a7125fc0c027e6d5
+RUN mkdir -p /opt/wordlists \
+ && curl -fsSL -o /opt/wordlists/common.txt \
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/${SECLISTS_COMMIT}/Discovery/Web-Content/common.txt" \
+ && echo "${WORDLIST_SHA256}  /opt/wordlists/common.txt" | sha256sum -c - \
+ && chmod -R a+rX /opt/wordlists
+
 # Shared ProjectDiscovery config/cache dirs (nuclei, httpx, tlsx). None of these
 # Go tools key their state off $HOME — they resolve it via
 # $XDG_CONFIG_HOME/$XDG_CACHE_HOME (Go's os.UserConfigDir/UserCacheDir). We point

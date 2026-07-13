@@ -225,3 +225,38 @@ params omitted the existing SQLi/XSS output is byte-for-byte unchanged.
 call, and is invoked on its own (e.g. `python -m modules.recon`) — it is intentionally NOT
 wired into `integration.py`'s resolver or the `scan_<vuln>` pipeline. Covered by
 `tests/test_report_io.py` and `tests/test_recon_tools.py`.
+
+## ffuf + a pinned wordlist (tool install only, no runner yet)
+
+`docker/sandbox/Dockerfile` also installs [ffuf](https://github.com/ffuf/ffuf) v2.1.0 — a
+single Go binary, pinned to a specific stable release (NOT `go install`/@latest, NOT apt —
+same reproducibility rationale as sqlmap/Dalfox/nuclei/httpx/tlsx above), downloaded from
+the official GitHub release and verified against a pinned sha256 (taken from ffuf's own
+`ffuf_2.1.0_checksums.txt` for this exact tag; independently re-downloaded and re-hashed
+locally before pinning, not just trusting the checksums file), installed to
+`/usr/local/bin/ffuf`. This is tool-install only — no agent/runner code exists yet.
+
+Unlike nuclei/httpx/tlsx, ffuf is not part of the ProjectDiscovery family and does not hit
+the XDG config-write-on-startup problem — confirmed by running `ffuf -V` under
+`--read-only --user 10001 --network none` with **no `/tmp/.config` bake needed**: it starts
+and exits cleanly with zero writes.
+
+A single small wordlist is bundled at `/opt/wordlists/common.txt` — SecLists'
+[`Discovery/Web-Content/common.txt`](https://github.com/danielmiessler/SecLists) (~4750
+entries), NOT a full SecLists clone (~1GB). SecLists is MIT-licensed. Fetched as a raw file
+pinned to one exact commit sha (`190c6f7b...f059e8`, what the `2026.1` tag resolved to at
+pin time — a commit sha can't be moved or deleted out from under the pin the way a tag
+could be), sha256-verified (`WORDLIST_SHA256` in the Dockerfile), independently
+re-downloaded and re-hashed locally before pinning. Readable by uid 10001
+(`chmod -R a+rX /opt/wordlists` at build time, same as the nuclei-templates bake).
+
+```bash
+docker run --rm redsee-sandbox:latest ffuf -V                                    # 2.1.0
+docker run --rm redsee-sandbox:latest sh -c 'wc -l /opt/wordlists/common.txt'    # 4750
+docker run --rm --read-only --user 10001 --network none redsee-sandbox:latest ffuf -V
+# → succeeds, no config/permission error, no /tmp bake required
+```
+
+Building an `engine/ffuf_agent.py` (or a deterministic `engine/ffuf_tools.py`, mirroring
+whichever pattern fits ffuf's use case) and wiring its output into `report_io`/`modules/`
+is intentionally out of scope for this task — see `PROGRESS.md`/`HANDOFF.md` for next steps.

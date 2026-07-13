@@ -405,3 +405,35 @@ for this behavior, so there is no known way to suppress it in v1.10.0. This is t
 same "pin to avoid a problematic behavior" pattern as D-012's Dalfox v2.13.0 pin
 (avoiding the v3.x CLI rewrite) — pin to the last version WITHOUT the issue rather
 than working around it. Full detail in `docs/nuclei_sandbox.md`.
+
+---
+
+### D-020: ffuf pinned to v2.1.0; wordlist is ONE SecLists file pinned to a commit sha, not a full clone
+
+**Status:** Accepted
+**Date:** 2026-07-13
+**Decision:** The sandbox image installs `ffuf/ffuf` v2.1.0 as a pinned GitHub
+release binary (sha256-verified, NOT `go install`/@latest/apt), and bundles
+exactly one wordlist — SecLists' `Discovery/Web-Content/common.txt` (~4750
+lines) — at `/opt/wordlists/common.txt`, fetched via `raw.githubusercontent.com`
+pinned to one exact commit sha (`190c6f7b...f059e8`, what the `2026.1` tag
+resolved to at pin time) and sha256-verified.
+**Why:** Same reproducibility rationale as every other sandbox tool (sqlmap,
+Dalfox D-012, nuclei D-015, httpx D-019, tlsx): a pinned release binary with a
+verified checksum builds identically every time and needs no network at scan
+time. A commit sha is used for the wordlist instead of the tag name itself
+because a tag can be moved or deleted by the upstream repo owner, silently
+changing what a rebuild fetches; the commit sha it resolved to at pin time
+cannot. Bundling only ONE file (not `git clone`-ing all of SecLists, ~1GB) keeps
+the image small and matches what a single fixed-flag ffuf runner would need —
+there is no use case yet for choosing between multiple lists.
+**Alternatives / trade-off:** Clone the full SecLists repo and let a future
+runner pick from many lists — rejected for now: ~1GB of mostly-unused wordlists
+bloats every image pull/build for no benefit until there's an actual
+multi-wordlist runner design; a single common.txt is enough to build and test a
+first `ffuf` runner, and more lists can be added the same pinned way later if
+needed. Also considered baking ffuf's own `/tmp/.config` XDG entry like
+nuclei/httpx/tlsx — rejected because it's unnecessary: verified by running
+`ffuf -V` under the full hardened flag set (`--read-only --user 10001
+--network none`) that ffuf performs zero writes at startup, unlike the
+ProjectDiscovery tool family. Full detail in `docs/nuclei_sandbox.md`.

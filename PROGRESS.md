@@ -35,6 +35,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | Generalize agent pattern to xss / idor / auth | In progress (xss done, idor/auth not started) |
 | nuclei template-scan agent (CVEs / misconfig / exposures) | Done offline (engine + sandbox + SARIF/JSON/run.json output via report_io + standalone modules/recon.py); only a live end-to-end run is pending, blocked by env — see HANDOFF |
 | httpx + tlsx deterministic recon (fingerprint / TLS-cert inspection) | Done offline (engine/recon_tools.py + report_io recon channel + modules/recon.py extension); same env-blocked live run as nuclei — see HANDOFF |
+| ffuf + pinned wordlist (directory/file brute-force) | Tool installed in sandbox image only (docker/sandbox/Dockerfile: ffuf v2.1.0 + SecLists common.txt, both pinned/sha256-verified); no agent/runner code yet — see HANDOFF |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -54,6 +55,31 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-13 — ffuf + pinned wordlist installed in sandbox image
+
+**Done:** Added [ffuf](https://github.com/ffuf/ffuf) v2.1.0 to `docker/sandbox/Dockerfile`
+— pinned GitHub release binary, sha256-verified against ffuf's own checksums file and
+independently re-downloaded/re-hashed locally, same pattern as sqlmap/Dalfox/nuclei/
+httpx/tlsx (no `go install`/@latest/apt). Bundled ONE small wordlist at
+`/opt/wordlists/common.txt` — SecLists' `Discovery/Web-Content/common.txt` (~4750 lines,
+MIT-licensed), fetched as a raw file pinned to one exact commit sha (immune to a tag being
+moved/deleted), sha256-verified — NOT a full ~1GB SecLists clone. Confirmed ffuf needs no
+`/tmp/.config` XDG bake (unlike the ProjectDiscovery tools) by running `ffuf -V` under the
+full hardened flag set (`--read-only --user 10001 --network none`) with zero writes. All
+definition-of-done checks green: `ffuf -V` (normal + hardened), wordlist line count (4750),
+nuclei/httpx/tlsx/sqlmap/dalfox regression unaffected. Tool-install only —
+`docker/sandbox/Dockerfile` + `docs/nuclei_sandbox.md` — no Python/engine/build.sh changes.
+New decision D-020.
+
+**Next:** Build the runner — either an LLM-driven `engine/ffuf_agent.py` (mirroring
+nuclei_agent) or a deterministic `engine/ffuf_tools.py` (mirroring recon_tools), whichever
+fits directory/file brute-forcing better — and wire its output into `report_io`/`modules/`
+the same additive way. Then a live end-to-end `modules.recon` run once sandbox networking
+is resolved, idor/auth agents, and the long-outstanding live `scan_xss()` smoke.
+
+**Blockers:** None for this task itself (pure tool-install, fully offline-verified). The
+runner-build step is unblocked and can start any time.
 
 ### 2026-07-13 — deterministic httpx/tlsx recon, surfaced alongside nuclei
 

@@ -1,23 +1,33 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-13T13:30:00Z
-**Current milestone:** deterministic sandboxed httpx/tlsx recon (engine/recon_tools.py), surfaced into SARIF + recon_<id>.json + run.json alongside nuclei, via modules/recon.py's combined run_recon_scan. Branch `feat/nuclei`, all uncommitted.
+**Last updated:** 2026-07-13T15:10:00Z
+**Current milestone:** ffuf + a pinned small wordlist installed in the sandbox image (tool-install only, no runner yet). Branch `feat/nuclei`, all uncommitted.
 
 ## Next step
-The nuclei+httpx+tlsx recon track is functionally complete end-to-end EXCEPT a fully-green
-live run (blocked by the SAME host-local sandbox networking issue as before — see
-blockers). Options next: (a) get a green live `modules.recon` run once the sandbox
-networking issue is fixed/cleaned; (b) a live `scan_xss()` smoke through modules.xss
-(long-outstanding); (c) idor/auth agents. Everything in this session is UNCOMMITTED —
-commit when ready (spans: httpx/tlsx tool-install + v1.9.0 downgrade + recon_tools.py +
-report_io recon channel + modules/recon.py extension). Note the settled decision (D-017):
-nuclei/httpx/tlsx results are BROADER than the frozen Finding enum and DELIBERATELY never
-become typed Findings / never enter findings_<id>.json — do NOT "finish" that mapping.
+Build an `engine/ffuf_agent.py` (LLM-driven, mirroring nuclei_agent's shape) or a
+deterministic `engine/ffuf_tools.py` (mirroring recon_tools' shape — TBD which fits ffuf's
+use case better: directory/file brute-forcing is arguably closer to a bounded deterministic
+sweep than an LLM-judged detection loop) and wire its output into `report_io`/`modules/` the
+same additive way nuclei/recon were. Everything in this session is UNCOMMITTED — commit when
+ready (Dockerfile ffuf+wordlist blocks + docs/nuclei_sandbox.md section). Also still pending
+from before: a live end-to-end `modules.recon` run (blocked by host-local sandbox
+networking — see blockers) and a live `scan_xss()` smoke.
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
+- Installed pinned ffuf v2.1.0 (github.com/ffuf/ffuf, sha256-verified against ffuf's own
+  checksums file + independently re-downloaded/re-hashed locally) into docker/sandbox/Dockerfile,
+  same pattern as sqlmap/Dalfox/nuclei/httpx/tlsx (official GitHub release binary, NOT
+  go install/@latest/apt). Bundled ONE small pinned wordlist at /opt/wordlists/common.txt —
+  SecLists' Discovery/Web-Content/common.txt (~4750 lines, MIT), fetched as a raw file pinned
+  to one exact commit sha (not just a tag, which can move), sha256-verified, NOT a full
+  SecLists clone. Confirmed ffuf needs NO XDG config-dir bake (unlike the ProjectDiscovery
+  tools) — `ffuf -V` succeeds under `--read-only --user 10001 --network none` with zero
+  writes. All DoD checks green: ffuf -V (both normal + hardened), wordlist line count (4750),
+  nuclei/httpx/tlsx/sqlmap/dalfox regression unaffected. docker/sandbox/ + docs only — no
+  Python/engine/build.sh changes — 2026-07-13
 - Built engine/recon_tools.py — deterministic sandboxed httpx (HTTP fingerprint) + tlsx
   (TLS/cert inspect) recon, reusing nuclei_agent's SHAPE (scope-gate-first, sandbox-only)
   WITHOUT any LLM/agent loop/budget — one fixed harness-built command per target.
@@ -58,9 +68,6 @@ nothing
   `nuclei_candidates=None` — found ones append to SARIF (ruleId=template_id) +
   nuclei_<id>.json + a run.json summary. New modules/recon.py (run_recon_scan); NOT
   wired into integration.py. tests/test_report_io.py (11 tests) — 2026-07-12
-- Built engine/nuclei_agent.py — template-scan agent parallel to SQLi/XSS, driving nuclei
-  via ONE harness-owned run_nuclei tool. status="found" from parsed JSONL only. 34 offline
-  tests vs REAL captured DVWA JSONL. Committed f4cf76b — 2026-07-12
 
 ## Key decisions
 - Host-local sandbox targets route via the bridge GATEWAY (never hairpin the public IP);
@@ -99,6 +106,13 @@ nothing
   omittable (either/both omitted => byte-for-byte unchanged); report_io stays decoupled
   from both source modules via getattr duck-typing. modules/recon.py is the standalone
   entry for all three tools, deliberately NOT in integration.py's resolver.
+- D-020: ffuf pinned to v2.1.0 (GitHub release binary, sha256-verified, NOT go
+  install/@latest/apt) — same reproducibility pattern as every other sandbox tool. Bundled
+  wordlist is SecLists' `Discovery/Web-Content/common.txt` ONLY (~4750 lines), pinned to one
+  exact commit sha (not a movable tag), sha256-verified — NOT a full SecLists clone
+  (~1GB would bloat the image and isn't needed for a single small list). Confirmed ffuf
+  needs no `/tmp/.config` XDG bake (unlike nuclei/httpx/tlsx) — it writes nothing at
+  startup, verified under `--read-only --user 10001 --network none`.
 
 ## Open issues / blockers
 - nuclei_agent/recon_tools have NO Finding mapping — by design (D-017), not a gap.
@@ -121,20 +135,17 @@ nothing
 - Container lifecycle is volatile across turns: check `docker ps` / `curl` before
   assuming DVWA (:8080) or Juice Shop (:3000) is up.
 
-## Changed files (this session — httpx/tlsx recon + report_io/recon.py extension)
-- docker/sandbox/Dockerfile — HTTPX_VERSION downgraded v1.10.0 -> v1.9.0 (phone-home fix,
-  new sha256); tlsx/nuclei pins unchanged. (httpx/tlsx were newly ADDED to this Dockerfile
-  in an earlier uncommitted session turn, alongside their own XDG config bake — that
-  install work + this version fix are combined here, still uncommitted.)
-- engine/recon_tools.py (NEW) — run_httpx/run_tlsx + ReconObservation + argv builders/
-  guards + JSON parsing. No LLM import, no BudgetTracker. Grep-verified run_in_sandbox-only.
-- engine/report_io.py — write_outputs gained optional `recon_observations=None`, a SECOND
-  channel alongside `nuclei_candidates=None` (same additive/omittable pattern): observed ->
-  SARIF (ruleId=category, level reused from _SEVERITY_TO_SARIF_LEVEL since recon severities
-  are already title-case) + recon_<id>.json + run.json `recon` summary (by tool + severity).
-- modules/recon.py — run_recon_scan now ALSO calls run_httpx/run_tlsx (one shared resolved
-  scope_config) and passes recon_observations into the same write_outputs call as
-  nuclei_candidates. Still standalone; NOT in integration.py's resolver.
+## Changed files (this session — ffuf + wordlist tool-install)
+- docker/sandbox/Dockerfile — added FFUF_VERSION=v2.1.0 (+sha256) install block (mirrors
+  Dalfox/nuclei's pinned-GitHub-release pattern exactly) and a wordlist-fetch block
+  (SECLISTS_COMMIT pinned sha + WORDLIST_SHA256) writing /opt/wordlists/common.txt,
+  chmod'd a+rX. No changes to any existing tool's pin, the XDG bake, the USER/ENTRYPOINT
+  lines, or anything below the existing nuclei-templates block's insertion point.
+- docs/nuclei_sandbox.md — new "ffuf + a pinned wordlist" section at the end: pin
+  provenance, confirms no XDG bake needed, verification commands.
+- docker/sandbox/build.sh — UNTOUCHED (verified: `git diff --stat build.sh` empty).
+- No engine/*, modules/*, schemas.py, or other Python file touched (verified via
+  `git status`/`git diff --stat` — only the two files above changed).
 - tests/test_recon_tools.py (NEW, 24 tests) + tests/fixtures/httpx_dvwa_real.jsonl +
   tests/fixtures/tlsx_selfsigned_real.jsonl (NEW, both real captured JSON).
 - docs/nuclei_sandbox.md — httpx pin note corrected to v1.9.0 + phone-home writeup; new

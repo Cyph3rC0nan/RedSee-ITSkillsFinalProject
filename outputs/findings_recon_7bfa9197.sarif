@@ -1,0 +1,36 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "RedSee",
+          "rules": [
+            {
+              "id": "http-fingerprint",
+              "name": "httpx:http-fingerprint"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "http-fingerprint",
+          "level": "note",
+          "message": {
+            "text": "status=200 title='OWASP Juice Shop' content_length=9903"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "http://redsees.com:3000/"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
