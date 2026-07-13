@@ -33,9 +33,9 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | SQLi agent-driven vertical slice (replace static stub) | Done |
 | Sandbox + scope-gating harness for the slice | Done |
 | Generalize agent pattern to xss / idor / auth | In progress (xss done, idor/auth not started) |
-| nuclei template-scan agent (CVEs / misconfig / exposures) | Done offline (engine + sandbox + SARIF/JSON/run.json output via report_io + standalone modules/recon.py); only a live end-to-end run is pending, blocked by env — see HANDOFF |
-| httpx + tlsx deterministic recon (fingerprint / TLS-cert inspection) | Done offline (engine/recon_tools.py + report_io recon channel + modules/recon.py extension); same env-blocked live run as nuclei — see HANDOFF |
-| ffuf + pinned wordlist (directory/file brute-force) | Tool installed in sandbox image only (docker/sandbox/Dockerfile: ffuf v2.1.0 + SecLists common.txt, both pinned/sha256-verified); no agent/runner code yet — see HANDOFF |
+| nuclei template-scan agent (CVEs / misconfig / exposures) | Done — engine + sandbox + SARIF/JSON/run.json output via report_io + standalone modules/recon.py; live end-to-end run confirmed against Juice Shop — see HANDOFF |
+| httpx + tlsx deterministic recon (fingerprint / TLS-cert inspection) | Done — engine/recon_tools.py + report_io recon channel + modules/recon.py extension; live end-to-end run confirmed — see HANDOFF |
+| ffuf + pinned wordlist (directory/file brute-force) | Done — pinned sandbox install (v2.1.0 + SecLists common.txt) + deterministic run_ffuf runner, chained off httpx's live URLs; live end-to-end run confirmed — see HANDOFF |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -55,6 +55,52 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-13 — ffuf content-discovery runner, chained off httpx's live URLs
+
+**Done:** Added `run_ffuf` to `engine/recon_tools.py` — deterministic sandboxed content
+discovery (directory/file brute-force) using the wordlist bundled in the previous task,
+mirroring `run_httpx`/`run_tlsx`'s exact shape (scope-gate-first, sandbox-only, no LLM/agent
+loop/budget). **Found and fixed a real bug via the mandated live smoke test**: the initial
+flag set (`-mc` status-code matching alone) FLOODED 4741 of 4750 wordlist entries as
+false-positive "hits" against Juice Shop, because it's a single-page app whose client-side
+routing catch-all serves an identical 200 `index.html` for every path — status-code matching
+alone can't distinguish that from a genuine hit. Added `-ac` (ffuf's auto-calibration, which
+probes the target's "nothing here" response shape and filters matches against it) to the
+fixed profile: re-verified it drops the flood to 0 on the SPA while STILL surfacing genuinely
+sensitive hits (`.git`, `.git/config`, `.env`, `admin`) on a differentiated test site, and
+correctly found Juice Shop's real static routes (`/assets`, `/media`, `/video`, `/promotion`,
+`/robots.txt`, `/security.txt`, `/ftp`) once re-run clean. This is the third instance of the
+"pin/configure to avoid a problematic real-world behavior, verified against a BUILT image and
+a REAL target, not assumed" pattern this branch has now hit (Dalfox's v2.13.0 pin, httpx's
+v1.9.0 pin, and now ffuf's `-ac`) — a flag set that looks correct in offline unit tests
+(synthetic + throwaway-server fixtures) can still be wrong against realistic modern targets.
+
+`modules/recon.py` now chains httpx -> ffuf: a new `_live_urls_from_httpx` helper feeds ffuf
+the LIVE base URLs httpx actually confirmed (`status="observed"`), falling back to the raw
+seed targets when httpx found nothing live. ffuf's observations join the SAME
+`recon_observations` list as httpx/tlsx, so `engine/report_io.py` needed ZERO changes — it
+was already fully generic/duck-typed for the recon channel. Rate/thread-bounded
+(`REDSEE_RATE_LIMIT` honored directly as a requests/SECOND cap for ffuf specifically, ceiling
+50) with a `-maxtime` backstop that fires before `run_in_sandbox`'s harder kill, so a
+rate-bounded scan exits gracefully with whatever hits it found rather than being killed
+mid-run. GET-only; recursion, proxy, external-command, and write flags are hard-forbidden
+(`_FFUF_FORBIDDEN`). Severity: Medium for a small hand-picked sensitive-path marker list
+(`.git`/`.env`/backup/admin/...), Low otherwise — derived solely from parsed ffuf JSON hit
+lines, never fabricated. 23 new offline tests in `tests/test_ffuf_recon.py` against a REAL
+captured fixture (`tests/fixtures/ffuf_localhost_real.jsonl`); 115-test full regression
+clean; `git diff --stat schemas.py` empty. Live end-to-end `modules.recon` run against Juice
+Shop (`http://redsees.com:3000/`) confirmed clean: httpx + ffuf both reached the live target
+and produced real observations (nuclei found 0 templates, as expected for a custom app).
+
+Also confirmed as a side effect of this session's live smoke: the host-local BRIDGE-mode
+sandbox networking blocker that had affected DVWA/Juice-Shop-style published-port targets
+throughout prior sessions is no longer reproducing — see `HANDOFF.md`.
+
+**Next:** idor/auth agents (not started), and the long-outstanding live `scan_xss()` smoke
+through the full `modules.xss` public API.
+
+**Blockers:** None for this task. See `HANDOFF.md` for the remaining open items.
 
 ### 2026-07-13 — ffuf + pinned wordlist installed in sandbox image
 

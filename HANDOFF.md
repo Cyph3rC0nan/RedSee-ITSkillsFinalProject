@@ -1,158 +1,103 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-13T15:10:00Z
-**Current milestone:** ffuf + a pinned small wordlist installed in the sandbox image (tool-install only, no runner yet). Branch `feat/nuclei`, all uncommitted.
+**Last updated:** 2026-07-13T17:00:00Z
+**Current milestone:** deterministic sandboxed ffuf content-discovery (engine/recon_tools.py's run_ffuf), chained off httpx's live URLs, surfaced into the SAME recon channel as httpx/tlsx. Branch `feat/nuclei`, all uncommitted.
 
 ## Next step
-Build an `engine/ffuf_agent.py` (LLM-driven, mirroring nuclei_agent's shape) or a
-deterministic `engine/ffuf_tools.py` (mirroring recon_tools' shape — TBD which fits ffuf's
-use case better: directory/file brute-forcing is arguably closer to a bounded deterministic
-sweep than an LLM-judged detection loop) and wire its output into `report_io`/`modules/` the
-same additive way nuclei/recon were. Everything in this session is UNCOMMITTED — commit when
-ready (Dockerfile ffuf+wordlist blocks + docs/nuclei_sandbox.md section). Also still pending
-from before: a live end-to-end `modules.recon` run (blocked by host-local sandbox
-networking — see blockers) and a live `scan_xss()` smoke.
+Deterministic recon trio (httpx/tlsx/ffuf) is done, chained through `modules/recon.py`.
+Options next: (a) idor/auth agents (long-outstanding, not started); (b) a live `scan_xss()`
+smoke through the full modules.xss public API (long-outstanding). Everything this session is
+UNCOMMITTED — commit when ready (engine/recon_tools.py's run_ffuf + modules/recon.py's
+httpx->ffuf chaining + tests/test_ffuf_recon.py + tests/fixtures/ffuf_localhost_real.jsonl).
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
-- Installed pinned ffuf v2.1.0 (github.com/ffuf/ffuf, sha256-verified against ffuf's own
-  checksums file + independently re-downloaded/re-hashed locally) into docker/sandbox/Dockerfile,
-  same pattern as sqlmap/Dalfox/nuclei/httpx/tlsx (official GitHub release binary, NOT
-  go install/@latest/apt). Bundled ONE small pinned wordlist at /opt/wordlists/common.txt —
-  SecLists' Discovery/Web-Content/common.txt (~4750 lines, MIT), fetched as a raw file pinned
-  to one exact commit sha (not just a tag, which can move), sha256-verified, NOT a full
-  SecLists clone. Confirmed ffuf needs NO XDG config-dir bake (unlike the ProjectDiscovery
-  tools) — `ffuf -V` succeeds under `--read-only --user 10001 --network none` with zero
-  writes. All DoD checks green: ffuf -V (both normal + hardened), wordlist line count (4750),
-  nuclei/httpx/tlsx/sqlmap/dalfox regression unaffected. docker/sandbox/ + docs only — no
-  Python/engine/build.sh changes — 2026-07-13
-- Built engine/recon_tools.py — deterministic sandboxed httpx (HTTP fingerprint) + tlsx
-  (TLS/cert inspect) recon, reusing nuclei_agent's SHAPE (scope-gate-first, sandbox-only)
-  WITHOUT any LLM/agent loop/budget — one fixed harness-built command per target.
-  ReconObservation (local, not schemas.py) has status={observed,error,out_of_scope} — no
-  "clean" status; a successful-but-empty probe yields no observation, never fabricated.
-  httpx: -status-code/-title/-web-server/-tech-detect/-content-length/-cdn/-tls-grab,
-  GET-only (-x/-path hard-forbidden). tlsx: -tls-version/-cipher/-serial/-expired/
-  -self-signed/-mismatched + a BOUNDED -cipher-enum -cipher-type weak; -san/-cn/-so
-  deliberately omitted (this tlsx build rejects combining them with other probes —
-  subject fields already appear by default via omitempty). tlsx derives -host/-port from
-  the target URL using the EXACT SAME formula run_in_sandbox uses internally, so the
-  probed port always matches what the firewall opens. Severity (Low/Medium, Finding's
-  title-case convention) comes solely from real tlsx fields (self_signed/expired/
-  mismatched/weak cipher_enum entries) — never fabricated. 24 offline tests vs REAL
-  captured fixtures: tests/fixtures/httpx_dvwa_real.jsonl (DVWA :8080) and
-  tests/fixtures/tlsx_selfsigned_real.jsonl (a real self-signed cert from a throwaway
-  local TLS listener spun up just for the capture, then torn down) — 2026-07-13
-- **Found + fixed a real bug**: httpx v1.10.0 (pinned by the prior tool-install task) makes
-  an UNCONDITIONAL network call on EVERY run — even with just `-status-code` alone,
-  `-disable-update-check` does NOT gate it — downloading a ~92MB ML model from
-  huggingface.co/datasets/happyhackingspace/dit. In the real hardened sandbox (egress
-  locked to the target IP:port) this would be DROPped, stalling every recon scan on a
-  doomed connection before ever probing the target. Downgraded the Dockerfile pin to
-  v1.9.0 (independently sha256-verified, confirmed clean — no such call, no `PageType` key
-  in its knowledgebase JSON) — same "pin to avoid bad behavior" pattern as Dalfox's v2.13.0
-  pin. Rebuilt + reverified all httpx/tlsx/nuclei/sqlmap/dalfox DoD checks pass — 2026-07-13
-- engine/report_io.py extended with a SECOND additive channel: `recon_observations=None`
-  mirrors the nuclei_candidates channel exactly — observed rows -> SARIF (ruleId=category,
-  level from the SAME Finding-style Low/Medium map, reused not duplicated) +
-  recon_<id>.json + a `recon` run.json summary block (count_by_tool + count_by_severity).
-  modules/recon.py extended: run_recon_scan now ALSO runs run_httpx+run_tlsx (sharing one
-  resolved scope_config with the nuclei agent) and passes recon_observations into the SAME
-  write_outputs call as nuclei_candidates. Both channels independently omittable; byte-
-  for-byte unchanged when both omitted. tests/test_report_io.py-style tests added directly
-  in test_recon_tools.py (SARIF/json/run.json/no-findings-leak/omitted-unchanged) — 2026-07-13
-- Surfaced nuclei candidates into the output layer WITHOUT touching schemas.py or
-  findings_<id>.json (settled decision D-017). write_outputs gained optional
-  `nuclei_candidates=None` — found ones append to SARIF (ruleId=template_id) +
-  nuclei_<id>.json + a run.json summary. New modules/recon.py (run_recon_scan); NOT
-  wired into integration.py. tests/test_report_io.py (11 tests) — 2026-07-12
+- Added `run_ffuf` to engine/recon_tools.py — deterministic sandboxed content discovery,
+  mirroring run_httpx/run_tlsx's exact shape (scope-gate-first, sandbox-only, no LLM/agent
+  loop/budget). **Found + fixed a real bug via the mandated live smoke test**: `-mc`
+  status-code matching alone FLOODED 4741/4750 words as false hits against Juice Shop (an
+  SPA whose client routing catch-all serves an identical 200 for every path). Added `-ac`
+  (auto-calibration) — confirmed it drops the flood to 0 on the SPA while still surfacing
+  genuine hits (.git/.env/admin) on a differentiated target, and Juice Shop's real static
+  routes once re-run. Same "verify against a real target" lesson as D-019. Rate/thread-bounded
+  (REDSEE_RATE_LIMIT honored as a req/sec cap, ceiling 50) with a `-maxtime` backstop so a
+  bounded scan exits gracefully. GET-only, no recursion/proxy/write flags (`_FFUF_FORBIDDEN`).
+  Severity Medium for a small sensitive-path marker list, Low otherwise — never fabricated.
+- Chained httpx -> ffuf in modules/recon.py (`_live_urls_from_httpx`): ffuf targets are
+  httpx's LIVE-confirmed URLs, falling back to seed targets. ffuf joins the SAME
+  `recon_observations` list as httpx/tlsx -> zero report_io changes needed (already generic).
+  23 new tests in tests/test_ffuf_recon.py vs a REAL captured fixture; 115-test full
+  regression clean; schemas.py untouched — 2026-07-13
+- Installed pinned ffuf v2.1.0 + bundled ONE pinned SecLists wordlist (common.txt, ~4750
+  lines, commit-sha-pinned, sha256-verified) into docker/sandbox/Dockerfile — same
+  reproducible-release pattern as every other sandbox tool. No XDG bake needed (ffuf writes
+  nothing at startup, unlike the ProjectDiscovery tools). D-020 — 2026-07-13
+- Built engine/recon_tools.py's run_httpx/run_tlsx — deterministic sandboxed HTTP
+  fingerprint + TLS/cert inspection, no LLM/agent loop. `ReconObservation` (local, not
+  schemas.py) has status={observed,error,out_of_scope}, no "clean" status. tlsx derives
+  host/port via the SAME formula run_in_sandbox uses internally — 2026-07-13
+- Surfaced nuclei candidates into report_io WITHOUT touching schemas.py or
+  findings_<id>.json (D-017). `write_outputs` gained optional `nuclei_candidates=` — SARIF +
+  nuclei_<id>.json + run.json summary. New standalone modules/recon.py — 2026-07-12
 
 ## Key decisions
-- Host-local sandbox targets route via the bridge GATEWAY (never hairpin the public IP);
-  Docker-PUBLISHED ports (DVWA) additionally need a torn-down nat/PREROUTING DNAT bypass.
-  See AGENTS.md/docs for full detail — unchanged this session.
-- engine/xss_agent.py, engine/nuclei_agent.py, engine/recon_tools.py are each NEW PARALLEL
-  modules — engine/agent.py (SQLi) untouched throughout. Shared generic helpers are
-  IMPORTED, not copied (recon_tools deliberately does NOT import from nuclei_agent —
-  trivial helpers like `_target_url` are reimplemented locally to stay decoupled, since
-  recon_tools has no LLM/agent loop at all and shouldn't depend on one that does).
-- Dalfox pinned to v2.13.0 (avoid v3.x CLI rewrite); nuclei pinned to v3.11.0 + templates
-  v10.4.5; **httpx pinned to v1.9.0, NOT v1.10.0** — v1.10.0 makes an unconditional
-  network call to huggingface.co on every run (not gated by -disable-update-check),
-  downloading a 92MB ML model; confirmed absent in v1.9.0. Same "pin to avoid bad
-  behavior" pattern each time.
-- nuclei's (and now httpx's/tlsx's) XDG_CONFIG_HOME/XDG_CACHE_HOME are set to
-  **/tmp/.config //tmp/.cache**, pre-populated at build time. One path serves two
-  runtimes: baked read-only files satisfy `-version` (no tmpfs), and the sandbox's
-  `--tmpfs /tmp` + HOME=/tmp overlay makes it WRITABLE for real scans. /tmp is the
-  sandbox's only writable mount — engine/sandbox.py NOT touched.
-- nuclei_agent's model-facing safety pattern (harness owns all flags; tags are an
-  ALLOWLIST; auth cookie threaded as the only permitted `-H`; a bad tool-call is refused,
-  not fatal) does NOT apply to recon_tools — recon_tools has NO model in the loop, so
-  there is nothing to sanitize/refuse from a caller; its `_assert_no_forbidden_flags` is a
-  pure coding-regression backstop on an entirely harness-built argv.
-- tlsx's `-host`/`-port` (not a URL) are derived via `_host_port_from_target`, using the
-  EXACT SAME port formula `engine.sandbox.run_in_sandbox` uses internally — required so
-  the port tlsx actually probes always matches the port the sandbox firewall opens.
-  `-san`/`-cn`/`-so` are omitted (this tlsx build rejects combining them with any other
-  probe flag; the same subject fields already appear via Go's omitempty regardless).
-- D-017 (settled, extended this session to recon): nuclei/httpx/tlsx results are BROADER
-  than the frozen Finding enum, so they are surfaced into SARIF + a dedicated per-source
-  JSON (`nuclei_<id>.json` / `recon_<id>.json`) + run.json ONLY — never typed Findings,
-  never in findings_<id>.json; schemas.py NOT modified. Both `nuclei_candidates` and
-  `recon_observations` on write_outputs are additive, optional, and independently
-  omittable (either/both omitted => byte-for-byte unchanged); report_io stays decoupled
-  from both source modules via getattr duck-typing. modules/recon.py is the standalone
-  entry for all three tools, deliberately NOT in integration.py's resolver.
-- D-020: ffuf pinned to v2.1.0 (GitHub release binary, sha256-verified, NOT go
-  install/@latest/apt) — same reproducibility pattern as every other sandbox tool. Bundled
-  wordlist is SecLists' `Discovery/Web-Content/common.txt` ONLY (~4750 lines), pinned to one
-  exact commit sha (not a movable tag), sha256-verified — NOT a full SecLists clone
-  (~1GB would bloat the image and isn't needed for a single small list). Confirmed ffuf
-  needs no `/tmp/.config` XDG bake (unlike nuclei/httpx/tlsx) — it writes nothing at
-  startup, verified under `--read-only --user 10001 --network none`.
+- D-017 (recon results -> SARIF + dedicated JSON + run.json, never typed Findings/
+  schemas.py) now covers nuclei, httpx/tlsx, AND ffuf — `report_io` stays fully decoupled
+  from every source module via getattr duck-typing, so adding ffuf required ZERO report_io
+  changes. modules/recon.py is the standalone entry for all four tools, not in
+  integration.py's resolver.
+- D-019/D-020 pattern ("pin/configure to avoid a problematic real-world behavior, verified
+  against a BUILT image + a real target, not assumed") now has a THIRD instance: ffuf's fixed
+  profile MUST include `-ac` (auto-calibration), not just `-mc` status-code matching — proven
+  via the live Juice-Shop smoke (see above). A flag set that looks right in offline unit
+  tests can still be wrong against real-world target behavior — always live-smoke-test new
+  tool integrations before calling them done.
+- REDSEE_RATE_LIMIT is honored DIRECTLY as ffuf's `-rate` (req/SECOND) rather than converted
+  per-minute — the literal per-minute conversion would make the bundled wordlist take ~79min
+  at the default 60. Ceiling-bounded at 50 req/s regardless of configured value. httpx/tlsx's
+  own rate handling is unchanged.
+- ffuf's targets chain from httpx's LIVE observations (`_live_urls_from_httpx`), not the raw
+  seed list — a target httpx couldn't reach is unlikely reachable for ffuf's noisier
+  brute-force either. Falls back to seed targets when httpx found nothing live.
+- Prior decisions (Dalfox v2.13.0 pin, nuclei v3.11.0 + templates v10.4.5, httpx v1.9.0 not
+  v1.10.0/phone-home, XDG under /tmp for nuclei/httpx/tlsx, tlsx host/port formula, recon_tools
+  has no model in the loop) unchanged this session — see DECISIONS.md D-012 through D-020 for
+  full detail; not re-summarized here to keep this file lean.
 
 ## Open issues / blockers
+- **RESOLVED this session** (re-verified via a real live run, not assumed): the host-local
+  BRIDGE-mode sandbox networking blocker affecting DVWA/Juice-Shop-style published-port
+  targets is no longer reproducing — `modules.recon` ran cleanly end-to-end against
+  `http://redsees.com:3000/` (scan_id `recon_d67b8366`), httpx AND ffuf both actually reaching
+  the live target. Kept here as a note in case it regresses, not as an active blocker.
 - nuclei_agent/recon_tools have NO Finding mapping — by design (D-017), not a gap.
-- Live smoke (nuclei_agent AND recon_tools/modules.recon) is BLOCKED by host-local sandbox
-  networking, NOT by any agent/recon code: a trivial `curl` through run_in_sandbox against
-  localhost:8080 still fails the isolation self-test with `target=7` (refused) — re-verified
-  fresh this session, independent of any code here. The orphaned network from the prior
-  session (`redsee-sbx-net-1dad3e0d`) has been removed and no orphaned sandbox networks
-  remain now, but the underlying host-local reachability issue persists (root cause not
-  yet found — possibly still the stale 172.18.0.0/16 DOCKER-USER/INPUT catch-all DROP
-  rules, which STILL exist: `iptables -S DOCKER-USER | grep 172.18`; deleting them needs
-  firewall changes I decline to make autonomously — USER ACTION to try next).
-  BOTH engine/nuclei_agent.py and engine/recon_tools.py are proven correct against this:
-  they surface the failure as status="error" (never a false clean/found/observed) — see
-  tests/test_recon_tools.py's error-path tests, which assert exactly this using the SAME
-  real error message captured from this live failure.
 - Not yet run: a live `scan_xss()` call through the full modules.xss public API.
-- This dev sandbox lacks `markdown`/`weasyprint` — red_report.py/blue_report.py + their
-  tests fail to import here (pre-existing, unrelated).
-- Container lifecycle is volatile across turns: check `docker ps` / `curl` before
-  assuming DVWA (:8080) or Juice Shop (:3000) is up.
+- `_SENSITIVE_PATH_MARKERS` (ffuf severity) is a small, deliberately conservative hand-picked
+  list — extend it if a real engagement surfaces another exposure pattern worth Medium.
+- outputs/*.sarif from ad-hoc live smoke runs got swept into a prior commit by a broad
+  `git add -A` (`.gitignore` covers `outputs/*.json` but NOT `.sarif`); this session deleted
+  the stale ones from disk as cleanup but did NOT commit that deletion — review `git status`
+  before your next commit.
+- This dev sandbox lacks `markdown`/`weasyprint` — red_report.py/blue_report.py + their tests
+  fail to import here (pre-existing, unrelated).
+- Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming
+  DVWA (:8080) or Juice Shop (:3000) is up.
 
-## Changed files (this session — ffuf + wordlist tool-install)
-- docker/sandbox/Dockerfile — added FFUF_VERSION=v2.1.0 (+sha256) install block (mirrors
-  Dalfox/nuclei's pinned-GitHub-release pattern exactly) and a wordlist-fetch block
-  (SECLISTS_COMMIT pinned sha + WORDLIST_SHA256) writing /opt/wordlists/common.txt,
-  chmod'd a+rX. No changes to any existing tool's pin, the XDG bake, the USER/ENTRYPOINT
-  lines, or anything below the existing nuclei-templates block's insertion point.
-- docs/nuclei_sandbox.md — new "ffuf + a pinned wordlist" section at the end: pin
-  provenance, confirms no XDG bake needed, verification commands.
-- docker/sandbox/build.sh — UNTOUCHED (verified: `git diff --stat build.sh` empty).
-- No engine/*, modules/*, schemas.py, or other Python file touched (verified via
-  `git status`/`git diff --stat` — only the two files above changed).
-- tests/test_recon_tools.py (NEW, 24 tests) + tests/fixtures/httpx_dvwa_real.jsonl +
-  tests/fixtures/tlsx_selfsigned_real.jsonl (NEW, both real captured JSON).
-- docs/nuclei_sandbox.md — httpx pin note corrected to v1.9.0 + phone-home writeup; new
-  "Deterministic recon" section; Output-surfacing section extended for the recon channel.
-- schemas.py, engine/sandbox.py, engine/agent.py, engine/xss_agent.py, engine/nuclei_agent.py,
-  modules/sqli.py, modules/xss.py, modules/idor.py, integration.py, build.sh — UNTOUCHED
-  (verified). schemas.py NOT modified.
+## Changed files (this session — ffuf content-discovery runner + httpx->ffuf chaining)
+- engine/recon_tools.py — added `run_ffuf` + argv builder (`_build_ffuf_argv`,
+  `_build_ffuf_target_url`, `_ffuf_rate`), `_FFUF_FORBIDDEN`, sensitive-path classifier
+  (`_is_sensitive_path`/`_SENSITIVE_PATH_MARKERS`), `_ffuf_observation_for`. `ReconObservation`
+  gained "ffuf" as a third `tool` value (just a string, no schema change).
+- modules/recon.py — added `_live_urls_from_httpx`, wired httpx -> ffuf into
+  `run_recon_scan`.
+- engine/report_io.py — UNTOUCHED (already fully generic for the recon channel).
+- tests/test_ffuf_recon.py (NEW, 23 tests) + tests/fixtures/ffuf_localhost_real.jsonl (NEW,
+  real captured JSON).
+- schemas.py, engine/sandbox.py, engine/nuclei_agent.py, engine/agent.py, engine/xss_agent.py,
+  modules/sqli.py, modules/xss.py, modules/idor.py, integration.py, docker/sandbox/Dockerfile,
+  build.sh — UNTOUCHED (verified via `git status`/`git diff --stat`).
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first
@@ -162,9 +107,9 @@ nothing
   public internet + host SSH(22) stay blocked & self-tested
 - Host-local targets route via the bridge gateway, never hairpin via the public IP
 - injectable/found derives SOLELY from parsed tool positive output (sqlmap for SQLi; Dalfox
-  [POC]/[V] for XSS; nuclei -jsonl result lines for templates) · never from the model ·
-  nuclei/XSS/SQLi agents never let the model supply raw flags; harness-owned profile only ·
-  no interactsh/OOB, no exploit/intrusive/dos/fuzz/brute, no auto-update, ever
+  [POC]/[V] for XSS; nuclei -jsonl result lines; ffuf JSON hit lines) · never from the model ·
+  agents never let the model supply raw flags; harness-owned profile only · no interactsh/OOB,
+  no exploit/intrusive/dos/fuzz/brute, no auto-update, ever
 - All tool execution via engine.sandbox.run_in_sandbox; every URL scope-checked first;
   detection-only (no exploit/blind-callback flags, ever)
 - load_env() only at true entry points · override=False always

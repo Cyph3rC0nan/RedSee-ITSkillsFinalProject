@@ -437,3 +437,41 @@ nuclei/httpx/tlsx — rejected because it's unnecessary: verified by running
 `ffuf -V` under the full hardened flag set (`--read-only --user 10001
 --network none`) that ffuf performs zero writes at startup, unlike the
 ProjectDiscovery tool family. Full detail in `docs/nuclei_sandbox.md`.
+
+---
+
+### D-021: ffuf's fixed profile includes `-ac` (auto-calibration), not just `-mc` status-code matching
+
+**Status:** Accepted
+**Date:** 2026-07-13
+**Decision:** `engine/recon_tools.py`'s `run_ffuf` fixed content-discovery profile
+includes `-ac` (ffuf's auto-calibration: it probes the target with a few
+random/nonexistent paths first, learns that target's "nothing here" response
+shape, and filters any subsequent match resembling it) in addition to `-mc`
+status-code matching.
+**Why:** The mandated live smoke test against Juice Shop (a single-page app)
+surfaced a real, provable failure mode of the naive `-mc`-only design: Juice
+Shop's client-side-routing catch-all serves an identical `200` response
+(its `index.html`) for literally every path, so status-code matching alone
+flooded 4741 of the bundled wordlist's 4750 entries as "hits" — noise, not
+evidence, and a direct violation of D-013's evidence-only reporting contract
+in spirit (even though each individual `200` was real, presenting 4741 of them
+as distinct discovered paths would mislead a report reader). This is
+inherently common on modern JS-framework targets (React/Angular/Vue apps with
+client-side routing), not an edge case. Adding `-ac` and re-testing against
+BOTH the SPA (flood drops to 0 — correct, since a pure client-routed SPA has
+no real server-side paths matching a generic wordlist) and a differentiated
+test site seeded with real distinct files (genuine hits — `.git`, `.git/config`,
+`.env`, `admin` — all still surfaced) confirmed the fix does not trade away
+detection power to buy the noise reduction.
+**Alternatives / trade-off:** Ship the `-mc`-only profile and rely on a human
+reviewer to eyeball/dismiss an obviously-flooded result set — rejected: it
+defeats the purpose of an automated scan (thousands of near-identical rows to
+manually triage) and risks a real hit being lost in the noise. This is the
+THIRD instance of the "pin/configure to avoid a problematic real-world
+behavior, verified against a BUILT image and a REAL target, not assumed"
+pattern on this branch (see D-012's Dalfox v2.13.0 pin, D-019's httpx v1.9.0
+pin) — reinforces that offline unit tests against synthetic/throwaway-server
+fixtures are necessary but not sufficient; a live smoke test against a
+realistic target is required before a new tool integration can be trusted.
+Full detail in `HANDOFF.md` and `PROGRESS.md`'s 2026-07-13 session-log entry.
