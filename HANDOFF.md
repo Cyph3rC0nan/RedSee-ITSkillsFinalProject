@@ -1,19 +1,36 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-13T18:30:00Z
-**Current milestone:** unified scan orchestrator (`modules/scan.py`'s `run_scan`) — crawl -> vuln agents (sqli, xss) -> recon (nuclei, httpx, tlsx, ffuf) -> aggregate into ONE `outputs/scan_<id>.json`, alongside the existing per-tool outputs, all sharing one scan_id. Branch `feat/nuclei`, uncommitted.
+**Last updated:** 2026-07-13T19:30:00Z
+**Current milestone:** persistent scan store (`storage/scan_store.py`) — SQLite-backed queue + status lifecycle + history over `modules.scan.run_scan`, surviving process restart. Branch `feat/nuclei`, uncommitted (orchestrator itself already committed at 490180e).
 
 ## Next step
-Orchestrator is COMPLETE and live-proven — commit it (modules/scan.py + tests/test_orchestrator.py;
-outputs are gitignored). The NEXT prompt wires modules.scan into integration.py/app.py
-(deliberately NOT done here). Longer-standing: idor/auth agents; a full-findings live run
-(agents actually driving sqlmap/dalfox) if ever needed — use a real REDSEE_LLM_MAX_USD and
-expect 10-40 min.
+Scan store is COMPLETE — commit it (storage/scan_store.py + storage/__init__.py +
+tests/test_scan_store.py + the .gitignore `outputs/*.db*` line; outputs/redsee.db is
+gitignored, never commit it). The NEXT prompt wires the store into app.py's Flask routes
+(enqueue/list/get endpoints + the dashboard tab) — deliberately NOT done here. Longer-standing:
+idor/auth agents.
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
+- Built `storage/scan_store.py` — persistent scan store (queue + lifecycle + history) over
+  run_scan. `enqueue_scan(target, *, scope_config=None)` gates UP FRONT (require_authorization
+  + assert_in_scope; refuses with ScopeError BEFORE any row is created), inserts a `queued`
+  row, hands the id to a bounded background worker pool, returns the id. Worker flips
+  queued->running->done (persisting the summary rollup + the PATH to scan_<id>.json, never
+  the full record — the JSON file stays the source of truth) or ->error with the message on
+  any exception (a scan is NEVER left stuck in running; a store re-opened after a crash
+  reconciles orphaned `running` rows to `error` on init). SQLite at outputs/redsee.db
+  (gitignored via a new `outputs/*.db*` line), stdlib sqlite3 only, per-op connections
+  serialized by one RLock (no "database is locked"). Concurrency bounded + configurable
+  (`REDSEE_SCAN_CONCURRENCY` / `ScanStore(concurrency=)`, default 1). list_scans(newest-first,
+  status filter, limit/offset) + get_scan (row + loads scan_<id>.json when present). Chose a
+  NEW top-level `storage/` package over engine/scan_store.py: it imports modules.scan (which
+  imports engine.*), so storage->modules->engine keeps the dependency direction clean and
+  makes an import cycle impossible. 10 offline tests (tests/test_scan_store.py, run_scan
+  faked); 87-test regression green; schemas.py/modules/scan.py/app.py/integration.py untouched.
+  Live-proven against Juice Shop via the module-level API. NOT wired into Flask — 2026-07-13
 - Built `modules/scan.py` — the unified scan orchestrator (aggregation spine).
   `run_scan(target_url, *, scope_config=None, scan_id=None, out_dir="outputs")` gates FIRST
   (require_authorization + assert_in_scope; refuses before writing anything), then runs
@@ -56,12 +73,18 @@ nothing
   lines, commit-sha-pinned, sha256-verified) into docker/sandbox/Dockerfile — same
   reproducible-release pattern as every other sandbox tool. No XDG bake needed (ffuf writes
   nothing at startup, unlike the ProjectDiscovery tools). D-020 — 2026-07-13
-- Built engine/recon_tools.py's run_httpx/run_tlsx — deterministic sandboxed HTTP
-  fingerprint + TLS/cert inspection, no LLM/agent loop. `ReconObservation` (local, not
-  schemas.py) has status={observed,error,out_of_scope}, no "clean" status. tlsx derives
-  host/port via the SAME formula run_in_sandbox uses internally — 2026-07-13
 
 ## Key decisions
+- The persistent scan store lives at `storage/scan_store.py` (a NEW top-level package), NOT
+  `engine/scan_store.py` (the task offered either). Same layering logic as the orchestrator,
+  one level up: it imports `modules.scan` (which imports `engine.*`), so `storage -> modules
+  -> engine` keeps the dependency direction clean and makes an import cycle impossible
+  (nothing in modules/ or engine/ imports storage/). Live entry: `import storage.scan_store`.
+  SQLite at `outputs/redsee.db` (gitignored via `outputs/*.db*`); the DB holds a SUMMARY row +
+  a PATH to scan_<id>.json, never the full record (the JSON file is the source of truth).
+  Worker pool bounded + configurable (`REDSEE_SCAN_CONCURRENCY`, default 1). Gating is UP
+  FRONT in enqueue AND again inside run_scan. Orphaned `running` rows are reconciled to
+  `error` on store init so a crash never leaves a scan stuck. NOT wired into Flask (next).
 - The unified scan orchestrator lives at `modules/scan.py`, NOT `engine/orchestrator.py`
   (the task offered either). It imports BOTH the modules layer (sqli/xss) and the engine
   layer (recon/nuclei), and the repo's dependency direction is modules -> engine (nothing in
@@ -119,12 +142,12 @@ nothing
   unless-stopped -p 3000:3000 bkimminich/juice-shop` (stateless demo, no volumes — safe). If
   the live target is unreachable, check `docker ps` shows a real `0.0.0.0:3000->3000/tcp`
   mapping (not an empty Ports column) before assuming a code/networking bug.
-- Leaked host iptables rules exist from that killed run (`sudo iptables -S DOCKER-USER |
-  grep 172.` shows appended ACCEPT/DROP for old sandbox subnets 172.18/172.19). They are
-  HARMLESS to fresh sandbox runs (run_in_sandbox INSERTS its rules at the TOP, above these
-  appended ones — proven: scan_id 4caea79d's self-test passed and httpx/tlsx/ffuf all
-  reached the target). Not flushed autonomously (host-firewall change). Remove with targeted
-  `iptables -D` if tidying is wanted; not required for correctness.
+- Leaked host iptables rules from that killed run were CLEANED this session (user-authorized,
+  done by hand): 20 orphaned `-s 172.18/172.19` sandbox rules removed from DOCKER-USER/INPUT
+  (filter) + PREROUTING (nat); DOCKER-USER is back to its empty default; live 172.17 bridge
+  rules (juice shop/DVWA) untouched; juice shop still 200. If they recur after a future killed
+  run, inspect with `sudo iptables -S | grep -E '172\.(1[8-9]|2[0-9])\.'` and delete only the
+  stale-subnet ones (re-issue each `-A` as `-D`); never touch 172.17 (the live docker0 bridge).
 - To do a lightweight live orchestrator smoke WITHOUT the slow per-endpoint vuln agents, set
   `REDSEE_LLM_MAX_USD=0` (agents budget-stop instantly; httpx/tlsx/ffuf still run live).
 - This dev sandbox lacks `markdown`/`weasyprint` — red_report.py/blue_report.py + their tests
@@ -132,17 +155,15 @@ nothing
 - Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming
   DVWA (:8080) or Juice Shop (:3000) is up.
 
-## Changed files (this session — unified scan orchestrator)
-- modules/scan.py (NEW) — `run_scan` orchestrator + helpers (`_safe` per-tool wrapper,
-  `_classify_results` honest recon/nuclei status rollup, `_live_urls_from_httpx`,
-  `_severity_rollup`, `_build_llm_meta`, `_redsee_version`, `_EmptyAgentResult`). Opt-in
-  `__main__` (`python -m modules.scan`). NOT wired into integration.py.
-- tests/test_orchestrator.py (NEW, 9 tests) — fully mocked (crawl + every tool doubled at the
-  modules.scan boundary; a guard proves run_in_sandbox is never reached).
-- schemas.py, integration.py, engine/*, engine/report_io.py, modules/sqli.py, modules/xss.py,
-  modules/recon.py, docker/sandbox/* — UNTOUCHED (verified via `git status`/`git diff --stat`;
-  schemas.py + integration.py diffs empty). The ffuf work from earlier this session is already
-  committed (70d964e, 8bdeac8).
+## Changed files (uncommitted — persistent scan store)
+- storage/scan_store.py (NEW) — `ScanStore` class (sqlite queue + worker pool + history) +
+  module-level `enqueue_scan`/`list_scans`/`get_scan` delegating to a lazy default store.
+- storage/__init__.py (NEW, empty) — makes storage/ a package.
+- tests/test_scan_store.py (NEW, 10 tests) — run_scan faked at the storage.scan_store boundary.
+- .gitignore — added `outputs/*.db*` so outputs/redsee.db is never committed.
+- schemas.py, modules/scan.py, app.py, integration.py, engine/*, docker/sandbox/* — UNTOUCHED
+  (verified: `git diff --stat schemas.py modules/scan.py app.py integration.py` empty).
+- Already committed earlier this session: the orchestrator (490180e), ffuf (70d964e, 8bdeac8).
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first

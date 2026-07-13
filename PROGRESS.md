@@ -37,6 +37,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | httpx + tlsx deterministic recon (fingerprint / TLS-cert inspection) | Done — engine/recon_tools.py + report_io recon channel + modules/recon.py extension; live end-to-end run confirmed — see HANDOFF |
 | ffuf + pinned wordlist (directory/file brute-force) | Done — pinned sandbox install (v2.1.0 + SecLists common.txt) + deterministic run_ffuf runner, chained off httpx's live URLs; live end-to-end run confirmed — see HANDOFF |
 | Unified scan orchestrator (crawl→vuln agents→recon→one scan_<id>.json) | Done — modules/scan.py run_scan; aggregates findings + recon under ONE shared scan_id alongside the existing per-tool outputs; schemas.py + integration.py untouched; 9 offline tests + live Juice Shop run confirmed. NOT yet wired into integration.py/app.py (next) — see HANDOFF |
+| Persistent scan store (queue + status lifecycle + history) | Done — storage/scan_store.py; sqlite outputs/redsee.db (gitignored), bounded worker pool, gating up front, restart-survival + orphan reconcile; 10 offline tests + live enqueue→done confirmed. NOT yet wired into Flask routes (next) — see HANDOFF |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -56,6 +57,41 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-13 — persistent scan store (storage/scan_store.py)
+
+**Done:** Added `storage/scan_store.py` — a SQLite-backed scan queue + status lifecycle +
+history layer over `modules.scan.run_scan` (run_scan itself untouched). `ScanStore` (and
+module-level `enqueue_scan`/`list_scans`/`get_scan` over a lazy default instance) persists to
+`outputs/redsee.db` (stdlib `sqlite3` only, NO new deps; gitignored via a new `outputs/*.db*`
+line). `enqueue_scan(target, *, scope_config=None)` reuses `engine.scope`'s
+`require_authorization` + `assert_in_scope` and REFUSES (ScopeError) BEFORE any row is
+created, then inserts a `queued` row and hands the id to a bounded background worker pool
+(default 1, `REDSEE_SCAN_CONCURRENCY` / `ScanStore(concurrency=)`). The worker flips
+`queued -> running -> done` (persisting the summary rollup + the PATH to `scan_<id>.json`,
+never the full record — the JSON file stays the single source of truth) or `-> error` with
+the message on ANY exception, so a scan is never left stuck in `running`; a store re-opened
+after a hard crash reconciles orphaned `running` rows to `error` on init. `list_scans`
+(newest-first, status filter, limit/offset) and `get_scan` (row + loads `scan_<id>.json` when
+present) complete the read API.
+
+Chose a NEW top-level `storage/` package over `engine/scan_store.py` (the task offered
+either): the store imports `modules.scan` (which imports `engine.*`), so `storage -> modules
+-> engine` keeps the dependency direction clean and makes an import cycle impossible — nothing
+in `modules/` or `engine/` imports `storage/` (the task explicitly warned to avoid cycles).
+Live entry: `import storage.scan_store`. 10 offline tests in `tests/test_scan_store.py`
+(run_scan faked: enqueue+gating-refusal, queued→running→done with summary/path persisted,
+run_scan-raises→error-not-running, list newest-first + filter + paging, get loads the JSON,
+restart-survival across a new store instance, orphaned-running reconcile, concurrency bound
+respected); 87-test regression green; `git diff --stat schemas.py modules/scan.py app.py
+integration.py` empty; `git check-ignore outputs/redsee.db` matches. Live-proven: enqueued a
+real Juice Shop scan through the module-level API and watched it reach `done` with the summary
++ scan_json_path persisted and listed.
+
+**Next:** Wire the store into `app.py`'s Flask routes (enqueue/list/get endpoints + the
+dashboard tab) — the NEXT prompt, deliberately not done here. Then idor/auth agents.
+
+**Blockers:** None.
 
 ### 2026-07-13 — unified scan orchestrator (modules/scan.py)
 

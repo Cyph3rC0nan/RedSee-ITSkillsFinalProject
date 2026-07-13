@@ -5,6 +5,7 @@ __pycache__/
 outputs/*.pdf
 outputs/*.json
 outputs/*.sarif
+outputs/*.db*
 !outputs/.gitkeep
 *.pdf
 .DS_Store

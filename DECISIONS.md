@@ -521,3 +521,51 @@ Replacing the per-tool outputs with only the unified file — rejected: the per-
 files are already consumed elsewhere (red_report, app.py), so the spine is
 additive. NOT wired into `integration.py`'s resolver yet — that is a deliberate
 follow-up. Full detail in `HANDOFF.md` / `PROGRESS.md`'s 2026-07-13 entry.
+
+---
+
+### D-023: Persistent scan store is SQLite in a new storage/ package; DB holds a summary + path, not the full record
+
+**Status:** Accepted
+**Date:** 2026-07-13
+**Decision:** The scan queue + status lifecycle + history layer is
+`storage/scan_store.py` (a NEW top-level package), backed by a stdlib `sqlite3`
+database at `outputs/redsee.db`. Each scan is one row: `scan_id (pk), target,
+status (queued|running|done|error), created_at, started_at, finished_at,
+summary_json, error, scan_json_path`. The DB stores the summary rollup + a PATH
+to the on-disk `scan_<id>.json` — it does NOT blob the full scan record. A
+bounded background worker pool (default 1, `REDSEE_SCAN_CONCURRENCY` /
+`ScanStore(concurrency=)`) drains the queue.
+**Why:**
+  * *SQLite, not an in-memory dict or loose JSON index*: the "no persistent
+    storage" AGENTS.md limitation requires scans to survive a process restart and
+    be queryable (list/filter/page, newest-first). `sqlite3` is stdlib (no new
+    dependency) and gives durable, transactional, queryable rows for free.
+    `app.py`'s current in-memory `_scan_status` dict is lost on restart —
+    exactly the gap this closes.
+  * *`storage/` package, not `engine/scan_store.py`*: the store imports
+    `modules.scan.run_scan`, which imports `engine.*`. Putting it in `engine/`
+    would invert the `modules -> engine` direction and risk an import cycle. A
+    dedicated layer strictly above modules/ (`storage -> modules -> engine`) makes
+    a cycle impossible — same layering rule as D-022, one level up.
+  * *Summary + path, not the whole record*: the full unified record already lives
+    in `outputs/scan_<id>.json` (written by run_scan via report_io). Duplicating
+    it into the DB would create two sources of truth that can drift; storing a
+    path keeps the file authoritative and the DB lean (fast listing without
+    parsing large blobs). `get_scan` loads the JSON on demand.
+  * *Bounded worker + crash safety*: an unbounded worker would let a full queue
+    spawn unbounded sandboxes; the bound is explicit and configurable. Every run
+    is wrapped so an exception becomes `status=error` (D-013 evidence-only: never
+    fabricate a result, never leave a scan stuck in `running`), and a store
+    re-opened after a hard crash reconciles orphaned `running` rows to `error`.
+  * *Gating stays authoritative*: `enqueue_scan` runs `require_authorization` +
+    `assert_in_scope` BEFORE persisting a row (refuse unauthorized/out-of-scope
+    with no trace), and the worker calls run_scan which gates again (D-008/D-009).
+**Alternatives / trade-off:** (a) In-memory dict like app.py's `_scan_status` —
+rejected: does not survive restart (the whole point). (b) Blob the full record
+into a DB column — rejected: two sources of truth, drift risk, heavier listing.
+(c) `engine/scan_store.py` — rejected for the layering inversion / cycle risk
+above. (d) A real job queue (Celery/RQ/Redis) — rejected: new heavy deps for a
+demo/lab tool; a bounded daemon-thread pool over SQLite is sufficient and
+stdlib-only. NOT wired into Flask routes yet — that is the next task. Full detail
+in `HANDOFF.md` / `PROGRESS.md`'s 2026-07-13 entry.
