@@ -55,6 +55,49 @@ RUN curl -fsSL -o /tmp/nuclei.zip \
  && rm -rf /tmp/nuclei.zip /tmp/nuclei-extract \
  && nuclei -version
 
+# httpx (HTTP prober/fingerprinter) — a single Go binary, same ProjectDiscovery
+# family as nuclei. Pinned to v1.9.0, NOT the newer v1.10.0 (and NOT
+# `go install`/@latest): v1.10.0 makes an UNCONDITIONAL network call on every
+# single run (regardless of flags — `-disable-update-check` does NOT gate it) to
+# download a ~92MB ML "page type" model from
+# huggingface.co/datasets/happyhackingspace/dit — verified by running v1.10.0 with
+# minimal flags (`-status-code` alone) and seeing `INFO Model not found,
+# downloading url=https://huggingface.co/...`. In the real hardened sandbox
+# (egress locked to the single target IP:port), that request is DROPped by the
+# firewall, so every recon scan would first stall on a doomed connection to an
+# unrelated host before ever probing the target. v1.9.0 was independently
+# downloaded, sha256-verified, and confirmed CLEAN (no such call, and its JSON
+# `knowledgebase` object has no `PageType` key) with the exact flag set this
+# image's recon runner uses. Downloaded from the official GitHub release and
+# verified against a pinned sha256 (taken from ProjectDiscovery's own
+# httpx_1.9.0_checksums.txt for this exact tag). This is projectdiscovery/httpx
+# (the Go prober) — NOT the Python "httpx" library and NOT the Kali
+# "httpx-toolkit" apt package.
+ARG HTTPX_VERSION=v1.9.0
+ARG HTTPX_SHA256=54c6c91d61d3b82ba79f93633df04bb547f0c954d9d9b0fb8bcedf158f85ff2f
+RUN curl -fsSL -o /tmp/httpx.zip \
+        "https://github.com/projectdiscovery/httpx/releases/download/${HTTPX_VERSION}/httpx_${HTTPX_VERSION#v}_linux_amd64.zip" \
+ && echo "${HTTPX_SHA256}  /tmp/httpx.zip" | sha256sum -c - \
+ && unzip -q /tmp/httpx.zip -d /tmp/httpx-extract \
+ && install -m 0755 /tmp/httpx-extract/httpx /usr/local/bin/httpx \
+ && rm -rf /tmp/httpx.zip /tmp/httpx-extract \
+ && httpx -version
+
+# tlsx (TLS/certificate inspector) — a single Go binary, same ProjectDiscovery
+# family as nuclei/httpx. Pinned to v1.2.2, the current stable release (NOT
+# `go install`/@latest). Downloaded from the official GitHub release and
+# verified against a pinned sha256 (taken from ProjectDiscovery's own
+# tlsx_1.2.2_checksums.txt for this exact tag).
+ARG TLSX_VERSION=v1.2.2
+ARG TLSX_SHA256=6c4a0dff8473e954d3aa9b6c0cc9c68047cc7e2fb607fa94359f4ec55ef3f98c
+RUN curl -fsSL -o /tmp/tlsx.zip \
+        "https://github.com/projectdiscovery/tlsx/releases/download/${TLSX_VERSION}/tlsx_${TLSX_VERSION#v}_linux_amd64.zip" \
+ && echo "${TLSX_SHA256}  /tmp/tlsx.zip" | sha256sum -c - \
+ && unzip -q /tmp/tlsx.zip -d /tmp/tlsx-extract \
+ && install -m 0755 /tmp/tlsx-extract/tlsx /usr/local/bin/tlsx \
+ && rm -rf /tmp/tlsx.zip /tmp/tlsx-extract \
+ && tlsx -version
+
 # nuclei-templates — the official, pre-signed template set nuclei runs.
 # Pinned to v10.4.5 and baked into the image at BUILD time so a scan needs NO
 # network to fetch templates and `nuclei -update-templates`/`-ut` never runs.
@@ -76,36 +119,43 @@ RUN curl -fsSL -o /tmp/nuclei-templates.tar.gz \
  && tar -xzf /tmp/nuclei-templates.tar.gz -C /opt/nuclei-templates --strip-components=1 \
  && rm -f /tmp/nuclei-templates.tar.gz
 
-# nuclei's config/cache dirs. Unlike sqlmap/dalfox, nuclei does NOT key these
-# off $HOME — it resolves them via $XDG_CONFIG_HOME/$XDG_CACHE_HOME (Go's
-# os.UserConfigDir/UserCacheDir). We point BOTH under /tmp and pre-populate them
-# at BUILD time. This one location satisfies two very different runtimes:
+# Shared ProjectDiscovery config/cache dirs (nuclei, httpx, tlsx). None of these
+# Go tools key their state off $HOME — they resolve it via
+# $XDG_CONFIG_HOME/$XDG_CACHE_HOME (Go's os.UserConfigDir/UserCacheDir). We point
+# BOTH under /tmp and pre-populate them at BUILD time. This one location
+# satisfies two very different runtimes:
 #
-#   1. `-tv` / `-version` self-checks run `docker run --read-only` with NO tmpfs
+#   1. `-version`/`-tv` self-checks run `docker run --read-only` with NO tmpfs
 #      (see docs/nuclei_sandbox.md). There the baked /tmp files are present and
-#      read-only-readable, so nuclei reports the bundled templates version with
-#      zero writes and no network. The pre-baked .templates-config.json tells it
-#      the bundled /opt/nuclei-templates IS the installed set at
-#      NUCLEI_TEMPLATES_VERSION; `-disable-update-check` (passed on every scan)
-#      independently blocks any update/version network call.
+#      read-only-readable, so each tool starts with zero writes and no network.
+#      The pre-baked nuclei .templates-config.json tells it the bundled
+#      /opt/nuclei-templates IS the installed set at NUCLEI_TEMPLATES_VERSION;
+#      `-disable-update-check` (passed on every scan, all three tools) independently
+#      blocks any update/version network call.
 #
 #   2. A REAL scan runs via engine/sandbox.py, which mounts a fresh `--tmpfs /tmp`
 #      and sets HOME=/tmp. That tmpfs OVERLAYS (hides) the baked /tmp files with
-#      an empty WRITABLE dir, so nuclei can create the config/cache files it
-#      insists on writing at scan start — config.yaml, reporting-config.yaml, the
-#      uncover provider-config.yaml, and the template cache index.gob — which a
-#      real scan MUST write and could not if XDG pointed at the --read-only
-#      rootfs. The scan always passes `-t /opt/nuclei-templates` explicitly, so
-#      template resolution never depends on the regenerated config. This is the
-#      only writable path the hardened sandbox exposes; do NOT move XDG off /tmp
-#      or real scans fail with `could not create config file` on the read-only fs.
+#      an empty WRITABLE dir, so each tool can create the config/cache files it
+#      insists on writing at scan start — nuclei's config.yaml/
+#      reporting-config.yaml/uncover provider-config.yaml + template cache
+#      index.gob, and httpx's/tlsx's own config.yaml — which a real scan MUST
+#      write and could not if XDG pointed at the --read-only rootfs. nuclei scans
+#      always pass `-t /opt/nuclei-templates` explicitly, so template resolution
+#      never depends on the regenerated config. This is the only writable path
+#      the hardened sandbox exposes; do NOT move XDG off /tmp or real scans fail
+#      with `could not create config file` on the read-only fs.
 #
 # The uncover provider-config.yaml is pre-baked because nuclei's bundled uncover
 # package unconditionally tries to create it on EVERY startup (regardless of
 # flags); it must be a valid (if empty) YAML mapping `{}` — a 0-byte file makes
 # nuclei's YAML decoder fail with EOF (both discovered by running as uid 10001,
-# not assumed).
-RUN mkdir -p /tmp/.config/nuclei /tmp/.config/uncover /tmp/.cache/nuclei \
+# not assumed). httpx/tlsx each write their own single config.yaml at startup
+# (goflags-generated) — a pre-baked one-line comment file is enough for both (a
+# 0-byte file works too, but a real comment line documents intent); confirmed by
+# running both read-only that neither rewrites an existing config.yaml (mtime
+# unchanged), so the bake is never fought at scan time.
+RUN mkdir -p /tmp/.config/nuclei /tmp/.config/uncover /tmp/.config/httpx \
+      /tmp/.config/tlsx /tmp/.cache/nuclei \
  && printf '%s' \
       '{"nuclei-templates-directory":"/opt/nuclei-templates",' \
       > /tmp/.config/nuclei/.templates-config.json \
@@ -119,6 +169,10 @@ RUN mkdir -p /tmp/.config/nuclei /tmp/.config/uncover /tmp/.cache/nuclei \
       "\"nuclei-templates-latest-version\":\"${NUCLEI_TEMPLATES_VERSION}\"}" \
       >> /tmp/.config/nuclei/.templates-config.json \
  && printf '{}\n' > /tmp/.config/uncover/provider-config.yaml \
+ && printf '# redsee pre-baked httpx config (goflags-generated)\n' \
+      > /tmp/.config/httpx/config.yaml \
+ && printf '# redsee pre-baked tlsx config (goflags-generated)\n' \
+      > /tmp/.config/tlsx/config.yaml \
  && chmod -R a+rwX /tmp/.config /tmp/.cache \
  && chmod -R a+rX /opt/nuclei-templates
 ENV XDG_CONFIG_HOME=/tmp/.config

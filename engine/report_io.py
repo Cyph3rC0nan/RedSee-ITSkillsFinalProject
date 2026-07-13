@@ -16,6 +16,13 @@ a dedicated nuclei_<id>.json, and a run.json summary block — leaving the typed
 findings_<id>.json and the SQLi/XSS SARIF/run output byte-for-byte unchanged.
 report_io does not import the nuclei types; it duck-types candidates via getattr.
 
+engine.recon_tools's httpx/tlsx ReconObservations ride the SAME path (D-017):
+when a caller passes `recon_observations`, the "observed" ones are surfaced
+ADDITIVELY into the SARIF file (ruleId from category), a dedicated
+recon_<id>.json, and a run.json summary block — likewise duck-typed via getattr,
+likewise NEVER entering findings_<id>.json, likewise byte-for-byte unchanged
+when omitted.
+
 run.json NEVER contains secrets: any caller-supplied llm_meta is defensively
 stripped of key/token/secret/authorization-shaped fields before writing.
 """
@@ -120,7 +127,43 @@ def _nuclei_sarif_rules(found: list) -> list[dict]:
     return [{"id": tid, "name": tid_to_name[tid]} for tid in sorted(tid_to_name)]
 
 
-def _build_sarif(findings: list[Finding], nuclei_candidates=None) -> dict:
+def _recon_sarif_result(obs) -> dict:
+    """SARIF result for one observed ReconObservation (httpx/tlsx). Duck-typed
+    via getattr so report_io stays decoupled from engine.recon_tools. ruleId is
+    the recon category (e.g. "http-fingerprint", "tls-self-signed") — BROADER
+    than the frozen Finding enum, same reasoning as nuclei (D-017). Severity is
+    already title-case ("Low"/"Medium"), the same convention Finding uses, so
+    the existing _SEVERITY_TO_SARIF_LEVEL map is reused directly."""
+    category = getattr(obs, "category", None) or "recon"
+    target = getattr(obs, "target", None) or ""
+    evidence = getattr(obs, "evidence", "") or ""
+    title = getattr(obs, "title", None) or category
+    severity = getattr(obs, "severity", None)
+    text = evidence or title
+    return {
+        "ruleId": category,
+        "level": _SEVERITY_TO_SARIF_LEVEL.get(severity, "note"),
+        "message": {"text": text},
+        "locations": [{
+            "physicalLocation": {"artifactLocation": {"uri": target}},
+        }],
+    }
+
+
+def _recon_sarif_rules(observed: list) -> list[dict]:
+    """rules[] entries for the distinct categories among observed observations,
+    sorted for determinism; rule name is the tool + category."""
+    cat_to_name: dict = {}
+    for o in observed:
+        cat = getattr(o, "category", None)
+        if cat and cat not in cat_to_name:
+            tool = getattr(o, "tool", None) or "recon"
+            cat_to_name[cat] = f"{tool}:{cat}"
+    return [{"id": cat, "name": cat_to_name[cat]} for cat in sorted(cat_to_name)]
+
+
+def _build_sarif(findings: list[Finding], nuclei_candidates=None,
+                 recon_observations=None) -> dict:
     # ruleId comes from each Finding's own `type` (schemas.py's exact enum:
     # SQLi/XSS/IDOR/BrokenAuth) — never hardcoded to one vuln class, so a
     # mixed or XSS-only findings list gets correctly-labeled SARIF results.
@@ -147,6 +190,16 @@ def _build_sarif(findings: list[Finding], nuclei_candidates=None) -> dict:
     if found:
         results += [_nuclei_sarif_result(c) for c in found]
         rules += _nuclei_sarif_rules(found)
+
+    # Additively surface observed recon (httpx/tlsx) observations — same
+    # broader-than-Finding-enum reasoning (D-017), appended AFTER nuclei so with
+    # no recon input the output (including the nuclei-augmented case) is
+    # byte-for-byte unchanged.
+    observed = [o for o in (recon_observations or [])
+                if getattr(o, "status", None) == "observed"]
+    if observed:
+        results += [_recon_sarif_result(o) for o in observed]
+        rules += _recon_sarif_rules(observed)
 
     return {
         "version": "2.1.0",
@@ -218,9 +271,48 @@ def _nuclei_summary(candidates: list) -> dict:
     }
 
 
+def _recon_observation_dict(obs) -> dict:
+    """Serialize one ReconObservation to the raw audit shape for recon_<id>.json.
+    Duck-typed via getattr so report_io does not depend on engine.recon_tools."""
+    return {
+        "tool": getattr(obs, "tool", None),
+        "target": getattr(obs, "target", None),
+        "category": getattr(obs, "category", None),
+        "title": getattr(obs, "title", None),
+        "severity": getattr(obs, "severity", None),
+        "evidence": getattr(obs, "evidence", "") or "",
+        "status": getattr(obs, "status", None),
+        "error": getattr(obs, "error", None),
+    }
+
+
+def _recon_summary(observations: list) -> dict:
+    """run.json summary block for a recon (httpx/tlsx) run: counts BY TOOL and,
+    for the observed ones, counts by severity."""
+    by_tool: dict = {}
+    by_status: dict = {}
+    by_severity: dict = {}
+    for o in observations:
+        tool = getattr(o, "tool", None) or "unknown"
+        status = getattr(o, "status", None)
+        by_tool[tool] = by_tool.get(tool, 0) + 1
+        by_status[status] = by_status.get(status, 0) + 1
+        if status == "observed":
+            sev = (getattr(o, "severity", None) or "unknown")
+            by_severity[sev] = by_severity.get(sev, 0) + 1
+    return {
+        "total": len(observations),
+        "observed": by_status.get("observed", 0),
+        "error": by_status.get("error", 0),
+        "out_of_scope": by_status.get("out_of_scope", 0),
+        "count_by_tool": by_tool,
+        "count_by_severity": by_severity,   # observed only
+    }
+
+
 def _build_run_json(result: _AgentResult, *, scan_id: str, target_url: str,
                     llm_meta: dict | None = None,
-                    nuclei_candidates=None) -> dict:
+                    nuclei_candidates=None, recon_observations=None) -> dict:
     usage = result.usage
     doc = {
         "scan_id": scan_id,
@@ -240,17 +332,19 @@ def _build_run_json(result: _AgentResult, *, scan_id: str, target_url: str,
     scrubbed = _scrub_secrets(llm_meta)
     if scrubbed:
         doc["llm"] = scrubbed
-    # nuclei summary is added ONLY when nuclei input was passed, so a plain
-    # SQLi/XSS run.json is byte-for-byte unchanged.
+    # nuclei/recon summaries are added ONLY when that input was passed, so a
+    # plain SQLi/XSS run.json is byte-for-byte unchanged.
     if nuclei_candidates is not None:
         doc["nuclei"] = _nuclei_summary(nuclei_candidates)
+    if recon_observations is not None:
+        doc["recon"] = _recon_summary(recon_observations)
     return doc
 
 
 def write_outputs(agent_result: _AgentResult, findings: list[Finding], *,
                   scan_id: str, target_url: str, out_dir: str = "outputs",
                   llm_meta: dict | None = None,
-                  nuclei_candidates=None) -> dict:
+                  nuclei_candidates=None, recon_observations=None) -> dict:
     """Write findings_<scan_id>.json, findings_<scan_id>.sarif, and
     run_<scan_id>.json into out_dir (created if missing).
 
@@ -260,16 +354,27 @@ def write_outputs(agent_result: _AgentResult, findings: list[Finding], *,
 
     findings_<scan_id>.json is the exact shape integration.py already writes
     and red_report.py already reads: a plain JSON list of Finding.to_dict().
-    nuclei results NEVER enter it (they are broader than the frozen Finding enum).
+    nuclei/recon results NEVER enter it (both are broader than the frozen
+    Finding enum — see DECISIONS.md D-017).
 
     `nuclei_candidates` (optional): a list of NucleiCandidate-shaped objects. When
     provided (even if empty), the found ones are added to the SARIF report, the
     full raw list is written to nuclei_<scan_id>.json, and a nuclei summary block
-    is added to run_<scan_id>.json. When omitted (None), the SARIF, findings, and
-    run outputs are byte-for-byte identical to a SQLi/XSS-only run.
+    is added to run_<scan_id>.json.
+
+    `recon_observations` (optional): a list of ReconObservation-shaped objects
+    (engine.recon_tools's httpx/tlsx output). When provided (even if empty), the
+    "observed" ones are added to the SAME SARIF report (ruleId from category),
+    the full raw list is written to recon_<scan_id>.json, and a recon summary
+    block (counts by tool + by severity) is added to run_<scan_id>.json.
+
+    When BOTH nuclei_candidates and recon_observations are omitted (None), the
+    SARIF, findings, and run outputs are byte-for-byte identical to a plain
+    SQLi/XSS run.
 
     Returns {"findings": path, "sarif": path, "run": path} — plus "nuclei": path
-    when nuclei_candidates was provided.
+    when nuclei_candidates was provided, and "recon": path when
+    recon_observations was provided.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -280,14 +385,16 @@ def write_outputs(agent_result: _AgentResult, findings: list[Finding], *,
 
     sarif_path = out / f"findings_{scan_id}.sarif"
     sarif_path.write_text(
-        json.dumps(_build_sarif(findings, nuclei_candidates), indent=2),
+        json.dumps(_build_sarif(findings, nuclei_candidates, recon_observations),
+                   indent=2),
         encoding="utf-8")
 
     run_path = out / f"run_{scan_id}.json"
     run_path.write_text(
         json.dumps(_build_run_json(agent_result, scan_id=scan_id,
                                    target_url=target_url, llm_meta=llm_meta,
-                                   nuclei_candidates=nuclei_candidates),
+                                   nuclei_candidates=nuclei_candidates,
+                                   recon_observations=recon_observations),
                    indent=2),
         encoding="utf-8")
 
@@ -306,5 +413,15 @@ def write_outputs(agent_result: _AgentResult, findings: list[Finding], *,
                        indent=2),
             encoding="utf-8")
         paths["nuclei"] = str(nuclei_path)
+
+    # Dedicated recon JSON — the raw observation list. Written ONLY when recon
+    # input was passed, so a plain SQLi/XSS/nuclei run produces no extra file.
+    if recon_observations is not None:
+        recon_path = out / f"recon_{scan_id}.json"
+        recon_path.write_text(
+            json.dumps([_recon_observation_dict(o) for o in recon_observations],
+                       indent=2),
+            encoding="utf-8")
+        paths["recon"] = str(recon_path)
 
     return paths

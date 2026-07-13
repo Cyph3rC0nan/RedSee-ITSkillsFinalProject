@@ -346,3 +346,62 @@ would corrupt the typed shape `integration.py`/`red_report.py` consume. Implemen
 in `engine/report_io.py` (`nuclei_candidates` param, getattr duck-typing so
 report_io stays decoupled from `engine.nuclei_agent`) + `modules/recon.py`; covered
 by `tests/test_report_io.py`.
+**Extended 2026-07-13:** the same reasoning and the same mechanism now also cover
+`engine.recon_tools`'s httpx/tlsx `ReconObservation`s, via a second, independent,
+equally-optional `recon_observations` param on `write_outputs` (see D-019) — proving
+the D-017 pattern generalizes to a second, unrelated tool family without touching
+`schemas.py` or the nuclei channel.
+
+---
+
+### D-018: httpx/tlsx recon is deterministic — no LLM, no agent loop, no budget
+
+**Status:** Accepted
+**Date:** 2026-07-13
+**Decision:** `engine/recon_tools.py`'s `run_httpx`/`run_tlsx` reuse the SHAPE of
+`engine/nuclei_agent.py` (scope-gate every target first, sandbox-only via
+`run_in_sandbox`, evidence-gated JSON parsing) but deliberately have NO LLM client,
+NO plan/act/observe loop, and NO `BudgetTracker`. Each call is ONE fixed,
+harness-built command per target, run deterministically.
+**Why:** httpx/tlsx fingerprinting and TLS inspection are single-shot, single-target
+probes with no meaningful escalation ladder or parameter choice for a model to
+reason about (unlike sqlmap's depth/technique ladder or nuclei's template-tag
+selection) — an LLM in this loop would add latency and cost for zero decision
+value. Since there is no model in the loop, there is also nothing to
+sanitize/refuse from a caller; the argv is entirely harness-built, and
+`_assert_no_forbidden_flags` is a pure regression backstop, not a security
+boundary against adversarial input (contrast with nuclei_agent's `_sanitize_tags`,
+which DOES guard against model-supplied values).
+**Alternatives / trade-off:** Wrap httpx/tlsx in the same agent-loop shape as
+nuclei "for consistency" — rejected: would add an LLM dependency (cost, latency,
+a `REDSEE_LLM_*` requirement) to two tools that have no use for one, and would
+falsely suggest there's something for a model to decide here. `ReconObservation`
+deliberately has no "clean" status (unlike `NucleiCandidate`'s
+found/clean/error/out_of_scope) — a successful probe with nothing to report simply
+yields no observation for that target, since there is no completion-pass/ladder
+concept to report "clean" against.
+
+---
+
+### D-019: httpx is pinned to v1.9.0, not the newer v1.10.0
+
+**Status:** Accepted
+**Date:** 2026-07-13
+**Decision:** The sandbox image pins `projectdiscovery/httpx` to v1.9.0, not the
+release that was current when httpx was first added to the image (v1.10.0).
+**Why:** v1.10.0 makes an **unconditional network call on every single run** —
+confirmed with a minimal flag set (`-status-code` alone), and NOT gated by
+`-disable-update-check` — downloading a ~92MB ML "page type" classifier model from
+`huggingface.co/datasets/happyhackingspace/dit`. In the real hardened sandbox
+(egress locked to the single target IP:port, D-010), that request is DROPped by
+the firewall, so every recon scan would first stall on a doomed connection to an
+unrelated host before ever probing the target — a reliability and "no phone home"
+violation. v1.9.0 was independently downloaded, sha256-verified, and confirmed
+clean (no such call; its JSON `knowledgebase` object has no `PageType` key) against
+the exact flag set `engine/recon_tools.py` uses.
+**Alternatives / trade-off:** Keep v1.10.0 and try to find a flag/env var to
+disable the model download — rejected: no such flag exists in httpx's `-h` output
+for this behavior, so there is no known way to suppress it in v1.10.0. This is the
+same "pin to avoid a problematic behavior" pattern as D-012's Dalfox v2.13.0 pin
+(avoiding the v3.x CLI rewrite) — pin to the last version WITHOUT the issue rather
+than working around it. Full detail in `docs/nuclei_sandbox.md`.

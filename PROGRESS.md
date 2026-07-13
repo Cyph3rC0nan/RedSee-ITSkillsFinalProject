@@ -34,6 +34,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | Sandbox + scope-gating harness for the slice | Done |
 | Generalize agent pattern to xss / idor / auth | In progress (xss done, idor/auth not started) |
 | nuclei template-scan agent (CVEs / misconfig / exposures) | Done offline (engine + sandbox + SARIF/JSON/run.json output via report_io + standalone modules/recon.py); only a live end-to-end run is pending, blocked by env — see HANDOFF |
+| httpx + tlsx deterministic recon (fingerprint / TLS-cert inspection) | Done offline (engine/recon_tools.py + report_io recon channel + modules/recon.py extension); same env-blocked live run as nuclei — see HANDOFF |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -53,6 +54,37 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-13 — deterministic httpx/tlsx recon, surfaced alongside nuclei
+
+**Done:** Added `engine/recon_tools.py` — deterministic sandboxed recon (httpx HTTP
+fingerprinting, tlsx TLS/cert inspection), reusing `engine/nuclei_agent.py`'s
+scope-gate/sandbox-only SHAPE but with NO LLM, agent loop, or budget (one fixed,
+harness-built command per target). `ReconObservation` (local, not `schemas.py`) has
+`status ∈ {observed, error, out_of_scope}` — a successful-but-empty probe yields no
+observation, never fabricated data. Severity (`Low`/`Medium`) comes solely from real
+httpx/tlsx JSON fields. `engine/report_io.py`'s `write_outputs` gained a second additive
+channel, `recon_observations=None`, mirroring `nuclei_candidates` exactly (SARIF +
+`recon_<id>.json` + a `run.json` summary; independently omittable; findings JSON
+untouched). `modules/recon.py` now runs nuclei + httpx + tlsx together into one combined
+output. 24 offline tests against REAL captured httpx/tlsx JSON (one from DVWA, one from a
+self-signed cert on a throwaway local TLS listener spun up just for the capture).
+
+Also **found and fixed a real bug** while building this: httpx v1.10.0 (pinned by an
+earlier, still-uncommitted tool-install task) makes an unconditional network call to
+huggingface.co on every single run — not gated by `-disable-update-check` — downloading a
+92MB ML model. In the real egress-locked sandbox this would be blocked and stall every
+scan. Downgraded the pin to v1.9.0 (independently verified clean), the same
+"pin-to-avoid-bad-behavior" pattern as Dalfox's v2.13.0 pin.
+
+**Next:** A live end-to-end `modules.recon` run once the sandbox networking issue is
+resolved (see Blockers — re-confirmed this session, independent of any recon code). Then
+idor/auth agents, and the long-outstanding live `scan_xss()` smoke.
+
+**Blockers:** Same host-local sandbox-networking issue as the nuclei agent — a trivial
+`curl` through `run_in_sandbox` still fails today. Re-verified this session that it is
+NOT caused by recon_tools/nuclei_agent code (both correctly surface it as `status="error"`,
+never a false clean/found/observed). See `HANDOFF.md` for the exact diagnostic detail.
 
 ### 2026-07-12 — nuclei output surfacing (SARIF / JSON / run.json)
 

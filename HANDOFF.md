@@ -1,140 +1,147 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-12T13:30:00Z
-**Current milestone:** nuclei candidates surfaced into SARIF + nuclei_<id>.json + run.json (NOT typed Findings) via engine/report_io.py; standalone modules/recon.py entry. Branch `feat/nuclei`.
+**Last updated:** 2026-07-13T13:30:00Z
+**Current milestone:** deterministic sandboxed httpx/tlsx recon (engine/recon_tools.py), surfaced into SARIF + recon_<id>.json + run.json alongside nuclei, via modules/recon.py's combined run_recon_scan. Branch `feat/nuclei`, all uncommitted.
 
 ## Next step
-The nuclei track is functionally complete end-to-end EXCEPT a live run (blocked by the
-host-local sandbox networking cruft — see blockers). Options next: (a) get a green live
-`modules.recon` run once the orphaned iptables/network state is cleaned; (b) a live
-`scan_xss()` smoke through modules.xss (long-outstanding); (c) idor/auth agents. Note the
-settled decision (D-017): nuclei results are BROADER than the frozen Finding enum and
-DELIBERATELY never become typed Findings / never enter findings_<id>.json — do NOT
-"finish" that mapping.
+The nuclei+httpx+tlsx recon track is functionally complete end-to-end EXCEPT a fully-green
+live run (blocked by the SAME host-local sandbox networking issue as before — see
+blockers). Options next: (a) get a green live `modules.recon` run once the sandbox
+networking issue is fixed/cleaned; (b) a live `scan_xss()` smoke through modules.xss
+(long-outstanding); (c) idor/auth agents. Everything in this session is UNCOMMITTED —
+commit when ready (spans: httpx/tlsx tool-install + v1.9.0 downgrade + recon_tools.py +
+report_io recon channel + modules/recon.py extension). Note the settled decision (D-017):
+nuclei/httpx/tlsx results are BROADER than the frozen Finding enum and DELIBERATELY never
+become typed Findings / never enter findings_<id>.json — do NOT "finish" that mapping.
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
+- Built engine/recon_tools.py — deterministic sandboxed httpx (HTTP fingerprint) + tlsx
+  (TLS/cert inspect) recon, reusing nuclei_agent's SHAPE (scope-gate-first, sandbox-only)
+  WITHOUT any LLM/agent loop/budget — one fixed harness-built command per target.
+  ReconObservation (local, not schemas.py) has status={observed,error,out_of_scope} — no
+  "clean" status; a successful-but-empty probe yields no observation, never fabricated.
+  httpx: -status-code/-title/-web-server/-tech-detect/-content-length/-cdn/-tls-grab,
+  GET-only (-x/-path hard-forbidden). tlsx: -tls-version/-cipher/-serial/-expired/
+  -self-signed/-mismatched + a BOUNDED -cipher-enum -cipher-type weak; -san/-cn/-so
+  deliberately omitted (this tlsx build rejects combining them with other probes —
+  subject fields already appear by default via omitempty). tlsx derives -host/-port from
+  the target URL using the EXACT SAME formula run_in_sandbox uses internally, so the
+  probed port always matches what the firewall opens. Severity (Low/Medium, Finding's
+  title-case convention) comes solely from real tlsx fields (self_signed/expired/
+  mismatched/weak cipher_enum entries) — never fabricated. 24 offline tests vs REAL
+  captured fixtures: tests/fixtures/httpx_dvwa_real.jsonl (DVWA :8080) and
+  tests/fixtures/tlsx_selfsigned_real.jsonl (a real self-signed cert from a throwaway
+  local TLS listener spun up just for the capture, then torn down) — 2026-07-13
+- **Found + fixed a real bug**: httpx v1.10.0 (pinned by the prior tool-install task) makes
+  an UNCONDITIONAL network call on EVERY run — even with just `-status-code` alone,
+  `-disable-update-check` does NOT gate it — downloading a ~92MB ML model from
+  huggingface.co/datasets/happyhackingspace/dit. In the real hardened sandbox (egress
+  locked to the target IP:port) this would be DROPped, stalling every recon scan on a
+  doomed connection before ever probing the target. Downgraded the Dockerfile pin to
+  v1.9.0 (independently sha256-verified, confirmed clean — no such call, no `PageType` key
+  in its knowledgebase JSON) — same "pin to avoid bad behavior" pattern as Dalfox's v2.13.0
+  pin. Rebuilt + reverified all httpx/tlsx/nuclei/sqlmap/dalfox DoD checks pass — 2026-07-13
+- engine/report_io.py extended with a SECOND additive channel: `recon_observations=None`
+  mirrors the nuclei_candidates channel exactly — observed rows -> SARIF (ruleId=category,
+  level from the SAME Finding-style Low/Medium map, reused not duplicated) +
+  recon_<id>.json + a `recon` run.json summary block (count_by_tool + count_by_severity).
+  modules/recon.py extended: run_recon_scan now ALSO runs run_httpx+run_tlsx (sharing one
+  resolved scope_config with the nuclei agent) and passes recon_observations into the SAME
+  write_outputs call as nuclei_candidates. Both channels independently omittable; byte-
+  for-byte unchanged when both omitted. tests/test_report_io.py-style tests added directly
+  in test_recon_tools.py (SARIF/json/run.json/no-findings-leak/omitted-unchanged) — 2026-07-13
 - Surfaced nuclei candidates into the output layer WITHOUT touching schemas.py or
-  findings_<id>.json (settled decision D-017). engine/report_io.py: write_outputs gained
-  an optional `nuclei_candidates=None` param — found ones append to the SARIF report
-  (ruleId=template_id, level from nuclei severity: critical/high->error, medium->warning,
-  low/info->note; rules[] for distinct template_ids), the full raw list writes to
-  nuclei_<id>.json, and a nuclei summary block (found/clean/error + by-severity) is added
-  to run_<id>.json. findings_<id>.json stays typed-Finding-only. report_io duck-types the
-  candidates via getattr (no import of engine.nuclei_agent); _endpoint_status_summary now
-  falls back endpoint_url->target so a NucleiAgentResult can be the agent_result. When
-  nuclei_candidates is omitted, output is BYTE-FOR-BYTE identical to before (proven by
-  diffing against HEAD's report_io). New modules/recon.py (run_recon_scan) chains
-  run_nuclei_agent -> write_outputs(nuclei_candidates=...); NOT wired into integration.py.
-  tests/test_report_io.py (11 tests, real captured JSONL); 43 pass w/ test_nuclei_agent;
-  regression 42 passed/1 skipped; `git diff --stat schemas.py` empty — 2026-07-12
-- Built engine/nuclei_agent.py — template-scan agent parallel to SQLi/XSS, driving
-  nuclei. run_nuclei_agent -> NucleiAgentResult; NucleiCandidate/NucleiAgentResult local.
-  ONE harness-owned run_nuclei tool (model gives target/tags-allowlist/note, never flags);
-  fixed detection-only profile (-jsonl/-omit-raw/-disable-update-check/-no-interactsh,
-  bundled templates, info-severity floor, exclude dos/intrusive/fuzz/brute/oob).
-  status="found" from parsed JSONL only; sandbox/timeout/non-zero -> "error". Smuggling
-  raises. 34 offline tests vs REAL captured DVWA JSONL; grep proves run_in_sandbox-only.
-  Committed f4cf76b — 2026-07-12
-- Dockerfile: installed pinned nuclei v3.11.0 + templates v10.4.5 (sha256-verified) and
-  moved nuclei's XDG config/cache from the read-only /opt bake to /tmp/.config //tmp/.cache.
-  Reason: -tv/-version only READ config, but a REAL scan WRITES config + cache and died
-  `FTL could not create config file` on the read-only rootfs. The frozen sandbox mounts
-  one writable path (`--tmpfs /tmp` + HOME=/tmp), so config must live there: baked /tmp
-  files serve read-only -tv/-version, the tmpfs overlay makes them writable for a real
-  scan. Verified all 4 states; sandbox.py untouched. Committed f4cf76b — 2026-07-12
-- Mapped XssCandidate -> Finding(type="XSS"); made modules/xss.scan_xss agent-backed
-  (mirrors SQLi). engine/finding_map.py: xss_candidate_to_finding (injectable-only,
-  severity always "High"). engine/report_io.py generalized (agent-type-agnostic SARIF
-  ruleId from Finding.type; getattr for missing .depth) — SQLi output byte-for-byte
-  unchanged. _HAS_AGENT resolver + _agent_scan_xss falls back to _legacy_scan_xss. New
-  tests/test_xss_finding_map.py + offline tests; zero regressions — 2026-07-11
+  findings_<id>.json (settled decision D-017). write_outputs gained optional
+  `nuclei_candidates=None` — found ones append to SARIF (ruleId=template_id) +
+  nuclei_<id>.json + a run.json summary. New modules/recon.py (run_recon_scan); NOT
+  wired into integration.py. tests/test_report_io.py (11 tests) — 2026-07-12
+- Built engine/nuclei_agent.py — template-scan agent parallel to SQLi/XSS, driving nuclei
+  via ONE harness-owned run_nuclei tool. status="found" from parsed JSONL only. 34 offline
+  tests vs REAL captured DVWA JSONL. Committed f4cf76b — 2026-07-12
 
 ## Key decisions
-- Host-local target detection = loopback OR the resolved IP is one of THIS host's own
-  interface IPs (incl. docker bridge gateways). Route via the bridge GATEWAY, never
-  hairpin via the public IP. `connect_ip` (gateway for host-local, public IP for
-  remote) is used consistently by --add-host, the egress ACCEPT rule, AND the
-  self-test probe, so a passing self-test proves the exact path the scan takes.
-  `SandboxResult.target_ip` still reports the resolved IP, not connect_ip.
-- Docker-PUBLISHED host-local ports (DVWA) need an extra nat/PREROUTING DNAT bypass
-  beyond gateway routing (Docker DNATs published ports before our filter ACCEPT can
-  match); host-PROCESS targets (Juice Shop) don't. The bypass is best-effort, targeted
-  to subnet->gateway:port only, and torn down — never fatal, never broadened.
-- engine/xss_agent.py is a NEW PARALLEL module — engine/agent.py (SQLi) untouched.
-  Shared generic helpers are IMPORTED from engine.agent, not copied.
-- Dalfox writes [POC] to stdout and [V]/[I] to stderr — the runner parses both
-  COMBINED. stopped_reason for XSS is {done, completed_by_ladder, budget,
-  max_iterations} (no "error" reason, unlike SQLi) — a failed scan surfaces only via
-  per-candidate status="error", never a false "clean".
-- auth_cookie is sanitized then threaded via --cookie; REQUIRED for DVWA's xss_r route.
-- Dalfox pinned to v2.13.0, not latest v3.1.2 (full CLI/output rewrite in v3.x).
-- engine/report_io.py's generalization uses getattr() defaults + Finding.type read
-  dynamically (no isinstance/type-check branch) — extends to future agent shapes
-  automatically as long as candidates expose .endpoint_url/.status.
-- modules/sqli.py and modules/xss.py's _agent_scan_X wrappers are left duplicated
-  (~25 lines each) rather than factored into a shared helper — task asked to "mirror
-  the exact pattern"; revisit if a 3rd agent-backed module appears.
-- nuclei's XDG_CONFIG_HOME/XDG_CACHE_HOME are set to **/tmp/.config //tmp/.cache** and
-  pre-populated at build time (NOT /opt — earlier bake, now superseded). This one path
-  serves both runtimes: baked read-only files satisfy -tv/-version (no tmpfs), and the
-  sandbox's `--tmpfs /tmp` + HOME=/tmp overlay makes it WRITABLE for real scans (which
-  must write config.yaml/reporting-config.yaml + cache). /tmp is the sandbox's only
-  writable mount, so XDG must live there. engine/sandbox.py NOT touched.
-- nuclei engine pinned to v3.11.0 (current stable v3; no rewrite-avoidance reason like
-  Dalfox's v2 pin) and nuclei-templates pinned to v10.4.5 (GitHub codeload tag source
-  archive, sha256 == nuclei-templates' own checksums.txt; no separate binary asset).
-- nuclei_agent mirrors xss_agent EXACTLY (imports generic helpers from engine.agent, not
-  copied); NucleiCandidate/NucleiAgentResult local (not schemas.py). Model supplies
-  target/tags/note only; harness owns all flags. Tags are an ALLOWLIST (unknown-safe
-  dropped, dangerous/flag-like RAISES). Auth cookie threaded harness-side as `-H
-  "Cookie: <val>"` — the ONLY -H permitted (any other -H = injection, trips the guard).
-  stopped_reason has NO "error" (like XSS): a failed scan is only per-candidate
-  status="error". Default tags = tech,exposure,misconfig when model gives none.
-- D-017 (settled): nuclei results are BROADER than the frozen Finding enum, so they are
-  surfaced into SARIF + nuclei_<id>.json + run.json ONLY — never typed Findings, never in
-  findings_<id>.json; schemas.py NOT modified. write_outputs's `nuclei_candidates` is
-  additive & optional (omitted => byte-for-byte unchanged); report_io stays decoupled
-  (getattr duck-typing, no nuclei import). modules/recon.py is the standalone entry,
-  deliberately NOT in integration.py's resolver.
+- Host-local sandbox targets route via the bridge GATEWAY (never hairpin the public IP);
+  Docker-PUBLISHED ports (DVWA) additionally need a torn-down nat/PREROUTING DNAT bypass.
+  See AGENTS.md/docs for full detail — unchanged this session.
+- engine/xss_agent.py, engine/nuclei_agent.py, engine/recon_tools.py are each NEW PARALLEL
+  modules — engine/agent.py (SQLi) untouched throughout. Shared generic helpers are
+  IMPORTED, not copied (recon_tools deliberately does NOT import from nuclei_agent —
+  trivial helpers like `_target_url` are reimplemented locally to stay decoupled, since
+  recon_tools has no LLM/agent loop at all and shouldn't depend on one that does).
+- Dalfox pinned to v2.13.0 (avoid v3.x CLI rewrite); nuclei pinned to v3.11.0 + templates
+  v10.4.5; **httpx pinned to v1.9.0, NOT v1.10.0** — v1.10.0 makes an unconditional
+  network call to huggingface.co on every run (not gated by -disable-update-check),
+  downloading a 92MB ML model; confirmed absent in v1.9.0. Same "pin to avoid bad
+  behavior" pattern each time.
+- nuclei's (and now httpx's/tlsx's) XDG_CONFIG_HOME/XDG_CACHE_HOME are set to
+  **/tmp/.config //tmp/.cache**, pre-populated at build time. One path serves two
+  runtimes: baked read-only files satisfy `-version` (no tmpfs), and the sandbox's
+  `--tmpfs /tmp` + HOME=/tmp overlay makes it WRITABLE for real scans. /tmp is the
+  sandbox's only writable mount — engine/sandbox.py NOT touched.
+- nuclei_agent's model-facing safety pattern (harness owns all flags; tags are an
+  ALLOWLIST; auth cookie threaded as the only permitted `-H`; a bad tool-call is refused,
+  not fatal) does NOT apply to recon_tools — recon_tools has NO model in the loop, so
+  there is nothing to sanitize/refuse from a caller; its `_assert_no_forbidden_flags` is a
+  pure coding-regression backstop on an entirely harness-built argv.
+- tlsx's `-host`/`-port` (not a URL) are derived via `_host_port_from_target`, using the
+  EXACT SAME port formula `engine.sandbox.run_in_sandbox` uses internally — required so
+  the port tlsx actually probes always matches the port the sandbox firewall opens.
+  `-san`/`-cn`/`-so` are omitted (this tlsx build rejects combining them with any other
+  probe flag; the same subject fields already appear via Go's omitempty regardless).
+- D-017 (settled, extended this session to recon): nuclei/httpx/tlsx results are BROADER
+  than the frozen Finding enum, so they are surfaced into SARIF + a dedicated per-source
+  JSON (`nuclei_<id>.json` / `recon_<id>.json`) + run.json ONLY — never typed Findings,
+  never in findings_<id>.json; schemas.py NOT modified. Both `nuclei_candidates` and
+  `recon_observations` on write_outputs are additive, optional, and independently
+  omittable (either/both omitted => byte-for-byte unchanged); report_io stays decoupled
+  from both source modules via getattr duck-typing. modules/recon.py is the standalone
+  entry for all three tools, deliberately NOT in integration.py's resolver.
 
 ## Open issues / blockers
-- nuclei_agent has NO Finding mapping / output wiring yet — that's Prompt 3 (see Next step).
-- Live nuclei_agent smoke is BLOCKED by host-local sandbox networking, NOT by agent code:
-  a trivial `curl` through run_in_sandbox against localhost:8080 AND :3000 both fail the
-  isolation self-test with `target=7` (refused) right now. Root cause: orphaned sandbox
-  state from a crashed earlier run — an orphaned docker network `redsee-sbx-net-1dad3e0d`
-  (172.18.0.0/16) + leftover DOCKER-USER/INPUT iptables rules (incl. a catch-all DROP).
-  Cleaning those needs firewall/network changes I declined to make autonomously (the
-  auto-mode classifier flags flushing DROP rules as security-weakening). USER ACTION to
-  unblock: `docker network rm redsee-sbx-net-1dad3e0d` and delete the stale 172.18.0.0/16
-  DOCKER-USER/INPUT rules (`iptables -S DOCKER-USER`/`-S INPUT` to list). The agent itself
-  is proven correct: it surfaced the failure as status="error" (never a false clean/found),
-  and a real nuclei scan under the EXACT sandbox flags finds templates (verified directly).
+- nuclei_agent/recon_tools have NO Finding mapping — by design (D-017), not a gap.
+- Live smoke (nuclei_agent AND recon_tools/modules.recon) is BLOCKED by host-local sandbox
+  networking, NOT by any agent/recon code: a trivial `curl` through run_in_sandbox against
+  localhost:8080 still fails the isolation self-test with `target=7` (refused) — re-verified
+  fresh this session, independent of any code here. The orphaned network from the prior
+  session (`redsee-sbx-net-1dad3e0d`) has been removed and no orphaned sandbox networks
+  remain now, but the underlying host-local reachability issue persists (root cause not
+  yet found — possibly still the stale 172.18.0.0/16 DOCKER-USER/INPUT catch-all DROP
+  rules, which STILL exist: `iptables -S DOCKER-USER | grep 172.18`; deleting them needs
+  firewall changes I decline to make autonomously — USER ACTION to try next).
+  BOTH engine/nuclei_agent.py and engine/recon_tools.py are proven correct against this:
+  they surface the failure as status="error" (never a false clean/found/observed) — see
+  tests/test_recon_tools.py's error-path tests, which assert exactly this using the SAME
+  real error message captured from this live failure.
 - Not yet run: a live `scan_xss()` call through the full modules.xss public API.
 - This dev sandbox lacks `markdown`/`weasyprint` — red_report.py/blue_report.py + their
   tests fail to import here (pre-existing, unrelated).
 - Container lifecycle is volatile across turns: check `docker ps` / `curl` before
   assuming DVWA (:8080) or Juice Shop (:3000) is up.
-- The DNAT bypass assumes docker userland-proxy is enabled (docker-proxy for :8080 IS
-  running on this host, so the bypass precondition holds — the blocker above is stale rules).
 
-## Changed files (this session — nuclei output surfacing)
-- engine/report_io.py — write_outputs gained optional `nuclei_candidates=None`;
-  found -> SARIF (ruleId=template_id, nuclei-severity level map) + nuclei_<id>.json +
-  run.json nuclei summary. Duck-typed via getattr; _endpoint_status_summary falls back
-  endpoint_url->target. Omitted => byte-for-byte identical (proven vs HEAD).
-- modules/recon.py (NEW) — run_recon_scan chains run_nuclei_agent -> write_outputs; NOT
-  in integration.py's resolver, no scan_<vuln> signature.
-- tests/test_report_io.py (NEW) — 11 tests (real captured JSONL): found->SARIF+json+
-  run summary, findings_<id>.json nuclei-free, omitted==unchanged, secret scrub intact.
-- (earlier this branch: engine/nuclei_agent.py, prompts/nuclei_agent.txt,
-  tests/test_nuclei_agent.py, tests/fixtures/nuclei_dvwa_real.jsonl, docker/sandbox/
-  Dockerfile, docs/nuclei_sandbox.md — all committed in f4cf76b.)
-- schemas.py, engine/sandbox.py, engine/agent.py, engine/xss_agent.py, modules/sqli.py,
-  modules/xss.py, integration.py, build.sh — UNTOUCHED (verified). schemas.py NOT modified.
+## Changed files (this session — httpx/tlsx recon + report_io/recon.py extension)
+- docker/sandbox/Dockerfile — HTTPX_VERSION downgraded v1.10.0 -> v1.9.0 (phone-home fix,
+  new sha256); tlsx/nuclei pins unchanged. (httpx/tlsx were newly ADDED to this Dockerfile
+  in an earlier uncommitted session turn, alongside their own XDG config bake — that
+  install work + this version fix are combined here, still uncommitted.)
+- engine/recon_tools.py (NEW) — run_httpx/run_tlsx + ReconObservation + argv builders/
+  guards + JSON parsing. No LLM import, no BudgetTracker. Grep-verified run_in_sandbox-only.
+- engine/report_io.py — write_outputs gained optional `recon_observations=None`, a SECOND
+  channel alongside `nuclei_candidates=None` (same additive/omittable pattern): observed ->
+  SARIF (ruleId=category, level reused from _SEVERITY_TO_SARIF_LEVEL since recon severities
+  are already title-case) + recon_<id>.json + run.json `recon` summary (by tool + severity).
+- modules/recon.py — run_recon_scan now ALSO calls run_httpx/run_tlsx (one shared resolved
+  scope_config) and passes recon_observations into the same write_outputs call as
+  nuclei_candidates. Still standalone; NOT in integration.py's resolver.
+- tests/test_recon_tools.py (NEW, 24 tests) + tests/fixtures/httpx_dvwa_real.jsonl +
+  tests/fixtures/tlsx_selfsigned_real.jsonl (NEW, both real captured JSON).
+- docs/nuclei_sandbox.md — httpx pin note corrected to v1.9.0 + phone-home writeup; new
+  "Deterministic recon" section; Output-surfacing section extended for the recon channel.
+- schemas.py, engine/sandbox.py, engine/agent.py, engine/xss_agent.py, engine/nuclei_agent.py,
+  modules/sqli.py, modules/xss.py, modules/idor.py, integration.py, build.sh — UNTOUCHED
+  (verified). schemas.py NOT modified.
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first
