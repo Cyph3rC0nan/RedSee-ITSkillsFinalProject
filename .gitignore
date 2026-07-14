@@ -1,4 +1,5 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .env
@@ -12,3 +13,8 @@ outputs/*.db*
 *.egg-info/
 dist/
 build/
+
+# Agent skill tooling (installed via `npx skills add`) — local, not a project deliverable
+.claude/
+.agents/
+skills-lock.json

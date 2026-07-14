@@ -1,0 +1,13 @@
+{
+  "name": "redsees-marketplace-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reverse proxy putting the themed Juice Shop app and the demo-target/ companion sink service behind one public port.",
+  "main": "gateway.js",
+  "scripts": {
+    "start": "node gateway.js"
+  },
+  "dependencies": {
+    "http-proxy": "^1.18.1"
+  }
+}
