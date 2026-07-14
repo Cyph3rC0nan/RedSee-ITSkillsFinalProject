@@ -7,6 +7,7 @@ outputs/*.pdf
 outputs/*.json
 outputs/*.sarif
 outputs/*.db*
+outputs/*.html
 !outputs/.gitkeep
 *.pdf
 .DS_Store

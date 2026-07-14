@@ -34,10 +34,21 @@ if sys.platform == "win32":
             break
 
 import markdown
-import weasyprint
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
+
+# weasyprint needs system libs (pango/cairo/gdk-pixbuf) that may be absent on a
+# given host — imported gracefully so the DETERMINISTIC report path below (which
+# needs neither weasyprint nor an LLM call) always works even when it's missing.
+# generate_red_report() (the LLM-authored path) still requires it and degrades via
+# its own caller (app.py) when absent.
+try:
+    import weasyprint
+    _HAS_WEASYPRINT = True
+except ImportError:                                   # pragma: no cover - env-dependent
+    weasyprint = None
+    _HAS_WEASYPRINT = False
 
 load_dotenv()
 
@@ -193,6 +204,205 @@ def markdown_to_pdf(md_text: str, css_file: str, output_path: str) -> str:
 
     weasyprint.HTML(string=full_html).write_pdf(output_path)
     return output_path
+
+
+# ── Deterministic report (no LLM call, weasyprint OPTIONAL) ──────────────────
+# generate_red_report() above ALWAYS needs a working LLM call (call_llm) AND
+# weasyprint — a two-part dependency that fails closed the moment either is
+# unavailable/misconfigured (no API key, no network, no system libs). The
+# generator below builds the SAME kind of structured report directly from the
+# scan's own data (deterministic string templates, not an LLM), and renders it
+# via weasyprint when available or plain HTML when not (`markdown` — used here —
+# is a lightweight pure-Python package, already a hard dependency of this module).
+# This is the path app.py's /scan/<id>/report route calls: it must ALWAYS
+# produce a real, downloadable file, never a dead click.
+
+def _render_report(md_text: str, css_file: str, output_path_stem: str) -> tuple[str, str]:
+    """Render `md_text` to a PDF (weasyprint, when importable) or a self-contained
+    HTML file (always available). Returns (output_path, "pdf"|"html")."""
+    html_content = markdown.markdown(
+        md_text, extensions=["tables", "fenced_code", "toc", "nl2br"])
+    css_path = TEMPLATES_DIR / css_file
+    css_text = css_path.read_text(encoding="utf-8") if css_path.exists() else ""
+    full_html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>RedSee Report</title>
+    <style>{css_text}</style>
+</head>
+<body>
+    <div class="report-container">
+        {html_content}
+    </div>
+</body>
+</html>"""
+    if _HAS_WEASYPRINT:
+        output_path = f"{output_path_stem}.pdf"
+        weasyprint.HTML(string=full_html).write_pdf(output_path)
+        return output_path, "pdf"
+    # No weasyprint — write plain HTML instead. red.css's @page rules (paged-media
+    # headers/footers) are weasyprint-specific and browsers simply ignore them, so
+    # the SAME stylesheet still renders a clean, readable page; the operator can
+    # use their browser's own Print -> Save as PDF for a physical PDF if they want
+    # one.
+    output_path = f"{output_path_stem}.html"
+    Path(output_path).write_text(full_html, encoding="utf-8")
+    return output_path, "html"
+
+
+def _fmt_ts(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    try:
+        return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return iso
+
+
+def _finding_section(f: dict, i: int) -> str:
+    return f"""### Finding {i}: {f.get('type', 'Unknown')} in `{f.get('parameter', 'unknown')}`
+
+- **Severity:** {f.get('severity', 'Unknown')}
+- **Affected URL:** {f.get('url', 'unknown')}
+- **Vulnerable Parameter:** {f.get('parameter', 'unknown')}
+- **Payload:** `{f.get('payload', '(not recorded)')}`
+- **Confirmed:** {_fmt_ts(f.get('timestamp'))}
+
+**Evidence**
+
+```
+{(f.get('evidence') or '(no evidence text recorded)').strip()}
+```
+"""
+
+
+def _tools_table(tools_run: list[dict]) -> str:
+    if not tools_run:
+        return "_No tool-execution data recorded for this scan._\n"
+    rows = ["| Tool | Status | Count | Detail |", "|---|---|---|---|"]
+    for t in tools_run:
+        detail = (t.get("detail") or "").replace("|", "\\|")
+        rows.append(f"| {t.get('name','?')} | {t.get('status','?')} | "
+                    f"{t.get('count',0)} | {detail} |")
+    return "\n".join(rows) + "\n"
+
+
+def _recon_summary(recon: dict | None) -> str:
+    recon = recon or {}
+    observations = [o for o in (recon.get("observations") or [])
+                     if o.get("status") == "observed"]
+    nuclei_hits = [c for c in (recon.get("nuclei") or []) if c.get("status") == "found"]
+    if not observations and not nuclei_hits:
+        return "_No recon observations recorded._\n"
+    rows = ["| Tool | Severity | Category | Title |", "|---|---|---|---|"]
+    for c in nuclei_hits[:25]:
+        rows.append(f"| nuclei | {c.get('severity','?')} | {c.get('template_id','template')} | "
+                    f"{(c.get('name') or '').replace('|', chr(92)+'|')} |")
+    for o in observations[:25]:
+        rows.append(f"| {o.get('tool','?')} | {o.get('severity') or '—'} | "
+                    f"{o.get('category','?')} | {(o.get('title') or '').replace('|', chr(92)+'|')} |")
+    return "\n".join(rows) + "\n"
+
+
+def _build_deterministic_markdown(record: dict, scan_id: str) -> str:
+    """A structured pentest-style report built directly from a scan record —
+    schemas.Finding data + (when available) the unified scan_<id>.json's
+    target/mode/tools_run/recon/summary — no LLM involved, so it never fails on a
+    missing API key/network/model and is fully reproducible from the record alone.
+    """
+    findings = record.get("findings") or []
+    tools_run = record.get("tools_run") or []
+    target = record.get("target") or "(unknown target)"
+    mode = record.get("mode") or "—"
+    started = _fmt_ts(record.get("started_at"))
+    finished = _fmt_ts(record.get("finished_at"))
+    by_sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for f in findings:
+        sev = f.get("severity")
+        if sev in by_sev:
+            by_sev[sev] += 1
+
+    cover = f"""# RedSee — Penetration Test Report
+
+**Report ID:** {scan_id}
+**Target:** {target}
+**Scan mode:** {mode}
+**Scan window:** {started} — {finished}
+**Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+**Tool:** RedSee Automated Scanner (deterministic report — evidence-gated, no LLM narrative)
+**Total Findings:** {len(findings)}
+**Critical:** {by_sev['Critical']}  **High:** {by_sev['High']}  **Medium:** {by_sev['Medium']}  **Low:** {by_sev['Low']}
+
+---
+
+## Executive Summary
+"""
+    if findings:
+        cover += (
+            f"This automated scan of `{target}` confirmed **{len(findings)}** "
+            f"vulnerabilit{'y' if len(findings) == 1 else 'ies'} via tool-parsed, "
+            f"evidence-gated detection (sqlmap for SQL injection, Dalfox for "
+            f"reflected XSS) — no finding here is a model's assertion; each is "
+            f"backed by the raw tool evidence reproduced below.\n"
+        )
+    else:
+        cover += (
+            f"This automated scan of `{target}` confirmed **no vulnerabilities**. "
+            f"See the **Methodology** section below for exactly what ran, what was "
+            f"skipped, and why — a clean result only means what was actually "
+            f"tested came back clean; it does not claim to have tested everything.\n"
+        )
+
+    methodology = f"""
+## Methodology
+
+The scan crawled the target, extracted injectable parameters (query-string keys
+and form/body fields), and tested only parameter-bearing endpoints for SQL
+injection and reflected XSS — a parameter-less endpoint is never a valid
+injection target. Reconnaissance (template/CVE matching, HTTP fingerprinting,
+TLS inspection, content discovery) ran independently. Tool-by-tool outcome:
+
+{_tools_table(tools_run)}
+"""
+
+    findings_section = "\n## Findings\n\n"
+    if findings:
+        for i, f in enumerate(findings, 1):
+            findings_section += _finding_section(f, i) + "\n"
+    else:
+        findings_section += "_No confirmed vulnerabilities — see Methodology above._\n"
+
+    recon_section = f"""
+## Reconnaissance Observations
+
+{_recon_summary(record.get("recon"))}
+"""
+
+    footer = """
+---
+
+*This report was generated by RedSee. Every finding above is derived solely from
+parsed positive output of the underlying security tool (sqlmap / Dalfox / nuclei /
+httpx / tlsx / ffuf) — never fabricated or inferred by a model. Authorized testing
+only.*
+"""
+
+    return cover + methodology + findings_section + recon_section + footer
+
+
+def generate_deterministic_report(record: dict, scan_id: str | None = None) -> tuple[str, str]:
+    """Build and render a deterministic (LLM-free) red report from `record` —
+    either the full unified scan_<id>.json record, or a minimal wrapper carrying
+    at least {"findings": [...]}. Returns (output_path, "pdf"|"html"). Never
+    raises for "0 findings" — a clean scan gets a real report, not an error.
+    """
+    scan_id = scan_id or record.get("scan_id") or datetime.now().strftime("%Y%m%d_%H%M%S")
+    md = _build_deterministic_markdown(record, scan_id)
+    output_stem = str(OUTPUTS_DIR / f"red_report_{scan_id}")
+    path, fmt = _render_report(md, "red.css", output_stem)
+    print(f"[RedReport] deterministic report saved: {path} (format={fmt})")
+    return path, fmt
 
 
 def _summarize_findings(findings: list[dict]) -> str:

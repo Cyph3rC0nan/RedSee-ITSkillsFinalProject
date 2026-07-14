@@ -436,9 +436,55 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
     results = _run_stages(stages, max_parallel)
 
     # 6. Classify each stage into tool_status + collect its output.
-    #    Injection (sqli/xss): skipped cleanly when there is nothing param-bearing to
-    #    test — distinguishing "crawl found nothing" from "nothing had a parameter".
-    inj_skip = "no endpoints from crawl" if not endpoints else "no param-bearing endpoints"
+    #    httpx/tlsx are classified FIRST (moved ahead of sqli/xss, unchanged logic)
+    #    purely so their reachability signal is available when building the sqli/xss
+    #    skip reason below — httpx runs unconditionally in every mode, so it is a
+    #    reliable "did the target answer at all" check independent of the crawler.
+    httpx_obs: list = []
+    tlsx_obs: list = []
+    for name in ("httpx", "tlsx"):
+        if name not in stages:
+            tool_status[name] = ("skipped", 0, f"disabled in {profile.name} profile")
+            continue
+        res, err = results[name]
+        if err is not None:
+            tool_status[name] = ("error", 0, err)
+        else:
+            obs = list(res or [])
+            tool_status[name] = _classify_results(obs, "observed")
+            if name == "httpx":
+                httpx_obs = obs
+            else:
+                tlsx_obs = obs
+
+    # Injection (sqli/xss): skipped cleanly when there is nothing param-bearing to
+    # test — this is CORRECT, D-024 behavior (a param-less endpoint is never handed
+    # to sqlmap/Dalfox), never changed here. What changes is making WHY legible: a
+    # bare "skipped" conflates three materially different operator situations, so
+    # the reason is now one of three distinct messages (never affects the skip
+    # condition itself, `if injection_targets: stages[...]` above is untouched):
+    #   * crawl found endpoints, but NONE carry a parameter -> genuinely nothing to
+    #     inject (path-only APIs, static pages, a client-rendered SPA).
+    #   * crawl found ZERO endpoints AND httpx never got a live response either ->
+    #     the target looks properly unreachable (connection refused/DNS/timeout) —
+    #     a connectivity problem, not a scan decision.
+    #   * crawl found ZERO endpoints but httpx DID get a response (even an error
+    #     status, e.g. a gateway's 502 while its backend is down) -> the target
+    #     answered at the HTTP level but crawl couldn't discover anything — an
+    #     app-level failure, materially different from "reachable, just no params."
+    httpx_reached = any(getattr(o, "status", None) == "observed" for o in httpx_obs)
+    if endpoints:
+        inj_skip = (f"crawled {len(endpoints)} endpoint(s); none carry an "
+                    f"injectable parameter (path-only APIs / static pages) — "
+                    f"nothing to inject")
+    elif httpx_reached:
+        inj_skip = ("target responded (see httpx/tlsx recon below) but crawl "
+                    "discovered 0 endpoints — possible app-level failure behind "
+                    "a proxy/gateway, not a connectivity issue — nothing to inject")
+    else:
+        inj_skip = ("target appears unreachable — crawl and httpx both got no "
+                    "live response (0 pages crawled, 0 recon observations) — "
+                    "nothing to inject")
 
     sqli_findings: list = []
     xss_findings: list = []
@@ -470,24 +516,6 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
             nuclei_result = res
             nuclei_candidates = list(res.candidates)
             tool_status["nuclei"] = _classify_results(nuclei_candidates, "found")
-
-    # httpx / tlsx
-    httpx_obs: list = []
-    tlsx_obs: list = []
-    for name in ("httpx", "tlsx"):
-        if name not in stages:
-            tool_status[name] = ("skipped", 0, f"disabled in {profile.name} profile")
-            continue
-        res, err = results[name]
-        if err is not None:
-            tool_status[name] = ("error", 0, err)
-        else:
-            obs = list(res or [])
-            tool_status[name] = _classify_results(obs, "observed")
-            if name == "httpx":
-                httpx_obs = obs
-            else:
-                tlsx_obs = obs
 
     # 7. ffuf — chained off httpx's LIVE URLs, so it runs after the concurrent pool.
     ffuf_obs: list = []

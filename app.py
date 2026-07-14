@@ -240,37 +240,48 @@ def scan_findings(scan_id):
 # ─── ROUTE: Generate Red Team Report ──────────────────────
 @app.route("/scan/<scan_id>/report", methods=["POST"])
 def generate_report(scan_id):
-    """Returns: { "report_url": "/downloads/red_report_<scan_id>.pdf" }
+    """Returns: { "report_url": "/downloads/red_report_<scan_id>.<ext>", "format": "pdf"|"html" }
 
-    Reads findings from outputs/findings_{scan_id}.json and calls
-    red_report.generate_red_report() to produce the PDF.
+    Prefers the unified outputs/scan_{scan_id}.json (D-024 — full target/mode/
+    tools_run/recon context), falling back to the legacy outputs/findings_{scan_id}
+    .json (bare findings array, e.g. from a standalone modules/sqli.py run) and
+    then the in-memory cache, so any known scan_id can still get a report.
+
+    Uses red_report.generate_deterministic_report — evidence-derived, NOT an LLM
+    call — so this route needs neither weasyprint nor an LLM API key to succeed:
+    it renders a PDF when weasyprint happens to be installed, else a self-
+    contained HTML report. A scan with 0 findings still gets a real report (a
+    clean result is a legitimate deliverable); only a scan with NO data at all
+    (never ran / unknown id) is refused, with a clear reason — never a dead click.
     """
+    scan_json_path = OUTPUTS_DIR / f"scan_{scan_id}.json"
     findings_path = OUTPUTS_DIR / f"findings_{scan_id}.json"
-    findings: list[dict] = []
 
-    if findings_path.exists():
+    record: dict | None = None
+    if scan_json_path.exists():
+        with open(scan_json_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+    elif findings_path.exists():
         with open(findings_path, "r", encoding="utf-8") as f:
-            findings = json.load(f)
+            record = {"scan_id": scan_id, "findings": json.load(f)}
     else:
-        # Fallback to in-memory cache
+        # Fallback to in-memory cache (legacy /scan pipeline's own findings, if any).
         scan = scans.get(scan_id)
-        if scan is not None:
-            findings = scan.get("findings", [])
+        if scan is not None and scan.get("findings"):
+            record = {"scan_id": scan_id, "findings": scan.get("findings")}
 
-    if not findings:
-        return jsonify({"error": "No findings available for this scan"}), 400
-
-    try:
-        from red_report import generate_red_report   # lazy: needs weasyprint/markdown
-    except Exception as exc:                          # noqa: BLE001
-        return jsonify({"error": f"PDF generation is unavailable in this environment: {exc}"}), 503
+    if record is None:
+        return jsonify({"error": f"No scan data found for '{scan_id}' — it may "
+                        "still be queued/running, or the id is unknown."}), 404
 
     try:
-        report_path = generate_red_report(findings, scan_id=scan_id)
-        filename = Path(report_path).name
-        return jsonify({"report_url": f"/downloads/{filename}"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        from red_report import generate_deterministic_report   # lazy: only needs markdown (always present)
+        report_path, fmt = generate_deterministic_report(record, scan_id=scan_id)
+    except Exception as e:                            # noqa: BLE001 - never let this 500 opaquely
+        return jsonify({"error": f"Report generation failed: {e}"}), 500
+
+    filename = Path(report_path).name
+    return jsonify({"report_url": f"/downloads/{filename}", "format": fmt})
 
 # ─── ROUTE: Upload & Analyze SIEM Logs ────────────────────
 @app.route("/analyze-logs", methods=["POST"])

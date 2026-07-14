@@ -163,11 +163,15 @@ async function refreshDetail(id, quiet) {
   renderFindings(rec ? rec.findings : null, row.status);
   renderRecon(rec ? rec.recon : null, row.status);
 
-  // Report button — only meaningful once done with at least one finding
-  const canReport = row.status === "done" && summary && summary.findings_total > 0;
+  // Report button — available once the scan is done, REGARDLESS of finding count.
+  // A 0-finding scan still gets a real report ("no vulnerabilities confirmed" is a
+  // legitimate deliverable, not an error) — only a scan that isn't done yet has
+  // nothing to report on.
+  const canReport = row.status === "done";
   const rbtn = $("#reportBtn");
   rbtn.hidden = !canReport;
   rbtn.onclick = canReport ? () => downloadRedReport(row.scan_id) : null;
+  note("reportNote", "", "");
 }
 function renderThreat(bySev, total) {
   const c = sevCounts(bySev);
@@ -193,11 +197,19 @@ function renderTools(tools, status, error) {
     strip.innerHTML = `<span class="tool-chip"><span class="tdot"></span>${esc(label)}</span>`;
     return;
   }
-  strip.innerHTML = tools.map((t) => `
+  // "skipped"/"error" carry a WHY in .detail (e.g. "target appears unreachable —
+  // crawl and httpx both got no live response..."). A hover-only tooltip is easy
+  // to miss (and useless on touch), so show it as a visible sub-line for exactly
+  // those two statuses — a "ran" tool's count already says enough on its own.
+  strip.innerHTML = tools.map((t) => {
+    const showReason = (t.status === "skipped" || t.status === "error") && t.detail;
+    return `
     <span class="tool-chip t-${esc(t.status)}" title="${esc(t.detail || "")}">
       <span class="tdot"></span><b>${esc(t.name)}</b>
       <span class="tcount">${esc(t.status)}${t.count ? " · " + t.count : ""}</span>
-    </span>`).join("");
+      ${showReason ? `<span class="treason">${esc(t.detail)}</span>` : ""}
+    </span>`;
+  }).join("");
 }
 function renderFindings(findings, status) {
   const body = $("#findingsBody");
@@ -255,12 +267,19 @@ async function downloadRedReport(id) {
   const btn = $("#reportBtn");
   const prev = btn.textContent;
   btn.disabled = true; btn.textContent = "Building…";
+  note("reportNote", "", "");
   try {
-    const { report_url } = await api(`/scan/${encodeURIComponent(id)}/report`, { method: "POST" });
+    const { report_url, format } = await api(`/scan/${encodeURIComponent(id)}/report`, { method: "POST" });
     window.open(report_url, "_blank");
     btn.textContent = "Red Report PDF";
+    if (format && format !== "pdf") {
+      note("reportNote", `Generated as ${format.toUpperCase()} (opened in a new tab — use your browser's Print to save as PDF).`, "info");
+    }
   } catch (e) {
     btn.textContent = "Failed — retry";
+    // Surface the SERVER's actual reason (e.g. "scan is still running", "no data
+    // for this scan") — never leave the operator with just a dead-looking click.
+    note("reportNote", e.message || "Report generation failed.", "err");
   } finally { btn.disabled = false; setTimeout(() => (btn.textContent = prev), 2500); }
 }
 
