@@ -149,7 +149,10 @@ def test_safe_profile_argv_has_detection_flags_and_no_forbidden():
     # fixed, detection-only profile
     for flag in ("-jsonl", "-disable-update-check", "-no-interactsh", "-omit-raw"):
         assert flag in argv
-    assert "-t" in argv and "/opt/nuclei-templates" in argv
+    # templates are loaded from memory-safe category dirs under the corpus root
+    # (the whole corpus OOMs the 256 MB sandbox), each passed with its own -t
+    assert "-t" in argv
+    assert any(a.startswith("/opt/nuclei-templates/") for a in argv)
     # severity floor excludes info by default
     assert "-severity" in argv
     assert argv[argv.index("-severity") + 1] == "low,medium,high,critical"

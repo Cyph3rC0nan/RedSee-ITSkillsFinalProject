@@ -1,614 +1,419 @@
-/**
- * RedSee Pentest Dashboard — Frontend JavaScript
- *
- * Handles:
- *   - Tab switching (Red Team / Blue Team)
- *   - Scan lifecycle (start → poll → findings → report)
- *   - SIEM log upload + Wazuh alert fetch
- *   - Blue team event display + report generation
- *
- * All async operations use try/catch with showToast() error reporting.
- */
+/* ============================================================
+   RedSee — Security Operations Console (frontend)
+   Talks to: /api/scans (spine), /scan/<id>/report (red PDF),
+   /analyze-logs, /fetch-wazuh-alerts, /generate-blue-report.
+   Vanilla JS, no dependencies.
+   ============================================================ */
 
-// ─── State ──────────────────────────────────────────────────
-let currentScanId = null;
-let currentAnalysisId = null;
-let pollInterval = null;
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-// ─── Status Mappings ────────────────────────────────────────
-const STATUS_PROGRESS = {
-    "starting":      5,
-    "crawling":     20,
-    "testing_sqli": 40,
-    "testing_xss":  55,
-    "testing_idor": 70,
-    "testing_auth": 85,
-    "done":        100,
-    "error":       100
+const SEV_ORDER = ["Critical", "High", "Medium", "Low"];
+const SEV_ABBR = { Critical: "C", High: "H", Medium: "M", Low: "L" };
+
+const state = {
+  view: "red",
+  scans: [],
+  selectedId: null,
+  blue: { events: [], analysisId: null },
 };
 
-const STATUS_LABELS = {
-    "starting":      "Initializing scanner...",
-    "crawling":      "🕷️ Crawling target...",
-    "testing_sqli":  "💉 Testing SQL Injection...",
-    "testing_xss":   "🔮 Testing XSS...",
-    "testing_idor":  "🔑 Testing IDOR...",
-    "testing_auth":  "🚪 Testing Broken Auth...",
-    "done":          "✅ Scan Complete",
-    "error":         "❌ Scan Error"
-};
-
-const SEVERITY_COLORS = {
-    "Critical": { border: "#dc2626", bg: "#fef2f2", badgeBg: "#dc2626", badgeText: "#fff" },
-    "High":     { border: "#ea580c", bg: "#fff7ed", badgeBg: "#ea580c", badgeText: "#fff" },
-    "Medium":   { border: "#ca8a04", bg: "#fefce8", badgeBg: "#ca8a04", badgeText: "#fff" },
-    "Low":      { border: "#16a34a", bg: "#f0fdf4", badgeBg: "#16a34a", badgeText: "#fff" }
-};
-
-// ─── DOMContentLoaded ───────────────────────────────────────
-document.addEventListener("DOMContentLoaded", () => {
-    // Set initial tab state — Red Team visible by default
-    switchTab("red");
-});
-
-// ══════════════════════════════════════════════════════════════
-//  Tab Switching
-// ══════════════════════════════════════════════════════════════
-
-function switchTab(tab) {
-    const redContent  = document.getElementById("red-tab-content");
-    const blueContent = document.getElementById("blue-tab-content");
-    const tabBtns = document.querySelectorAll(".tab-btn");
-
-    // Deactivate all tab buttons
-    tabBtns.forEach(btn => btn.classList.remove("active"));
-
-    // Hide all tab content
-    if (redContent)  redContent.classList.add("hidden");
-    if (blueContent) blueContent.classList.add("hidden");
-
-    if (tab === "red") {
-        const redBtn = document.querySelector('.tab-btn[data-tab="red"]');
-        if (redBtn) redBtn.classList.add("active");
-        if (redContent) redContent.classList.remove("hidden");
-    } else if (tab === "blue") {
-        const blueBtn = document.querySelector('.tab-btn[data-tab="blue"]');
-        if (blueBtn) blueBtn.classList.add("active");
-        if (blueContent) blueContent.classList.remove("hidden");
-    }
+/* ── utilities ─────────────────────────────────────────── */
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function fmtClock(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+}
+function fmtTime(iso) {
+  if (!iso) return "—";
+  // Stored as "YYYY-MM-DDTHH:MM:SSZ" — show HH:MM:SS UTC, drop the date if today.
+  const m = /T(\d{2}:\d{2}:\d{2})/.exec(iso);
+  return m ? m[1] : iso;
+}
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  let body = {};
+  try { body = await res.json(); } catch (_) { /* non-JSON */ }
+  if (!res.ok) throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body });
+  return body;
+}
+function note(elId, msg, kind) {
+  const n = $("#" + elId);
+  n.textContent = msg || "";
+  n.className = "form-note" + (kind ? " " + kind : "");
 }
 
-// ══════════════════════════════════════════════════════════════
-//  Red Team — Scan Lifecycle
-// ══════════════════════════════════════════════════════════════
+/* ── nav + clock ───────────────────────────────────────── */
+function setView(view) {
+  state.view = view;
+  document.documentElement.dataset.view = view;
+  $$(".nav-item").forEach((b) => {
+    const on = b.dataset.nav === view;
+    b.classList.toggle("is-active", on);
+    b.setAttribute("aria-current", on ? "true" : "false");
+  });
+  $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.viewPanel === view));
+  const meta = view === "red"
+    ? ["Red Ops", "Authorize a target, launch a scan, and read the unified result."]
+    : ["Blue Ops", "Ingest SIEM telemetry, triage by severity, and export an incident report."];
+  $("#viewTitle").textContent = meta[0];
+  $("#viewSub").textContent = meta[1];
+}
+function startClock() {
+  const tick = () => { $("#clock").textContent = fmtClock(new Date()); };
+  tick();
+  setInterval(tick, 1000);
+}
 
-async function startScan() {
-    const urlInput = document.getElementById("target-url");
-    const scanBtn  = document.getElementById("start-scan-btn");
+/* ── severity helpers ──────────────────────────────────── */
+function sevCounts(bySev) {
+  const c = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+  if (bySev) for (const k of SEV_ORDER) c[k] = bySev[k] || 0;
+  return c;
+}
+function miniBar(bySev) {
+  const c = sevCounts(bySev);
+  const total = SEV_ORDER.reduce((a, k) => a + c[k], 0);
+  if (!total) return `<span class="minibar-none">—</span>`;
+  const seg = (k, cls) => c[k] ? `<i class="${cls}" style="height:${Math.min(14, 5 + c[k] * 2)}px" title="${k}: ${c[k]}"></i>` : "";
+  return `<span class="minibar" title="${SEV_ORDER.map((k) => k + ": " + c[k]).join(", ")}">${
+    seg("Critical", "b-crit")}${seg("High", "b-high")}${seg("Medium", "b-med")}${seg("Low", "b-low")}</span>`;
+}
+function statusPill(status) {
+  return `<span class="status-pill st-${esc(status)}">${esc(status)}</span>`;
+}
+function modeChip(mode) {
+  const m = (mode || "").toLowerCase();
+  if (!["fast", "standard", "deep"].includes(m)) return `<span class="mode-pill mode-none">—</span>`;
+  return `<span class="mode-pill mode-${m}">${esc(m)}</span>`;
+}
 
-    if (!urlInput || !urlInput.value.trim()) {
-        showToast("Please enter a target URL", "error");
-        return;
-    }
+/* ── RED: operations list ──────────────────────────────── */
+async function refreshScans() {
+  let data;
+  try { data = await api("/api/scans?limit=100"); }
+  catch (_) { return; }
+  state.scans = data.scans || [];
+  renderOps();
+  updateStatusline();
+  if (state.selectedId) {
+    const row = state.scans.find((s) => s.scan_id === state.selectedId);
+    // Keep the detail panel live while a scan runs.
+    if (row && (row.status === "running" || row.status === "queued")) refreshDetail(state.selectedId, true);
+  }
+}
+function renderOps() {
+  const body = $("#opsBody");
+  $("#opsCount").textContent = state.scans.length;
+  if (!state.scans.length) {
+    body.innerHTML = `<tr class="empty-row"><td colspan="6">No operations yet. Launch one to begin.</td></tr>`;
+    return;
+  }
+  body.innerHTML = state.scans.map((s) => `
+    <tr data-id="${esc(s.scan_id)}" class="${s.scan_id === state.selectedId ? "is-selected" : ""}">
+      <td class="cell-id">${esc(s.scan_id)}</td>
+      <td class="cell-target" title="${esc(s.target)}">${esc(s.target)}</td>
+      <td>${modeChip(s.mode)}</td>
+      <td>${statusPill(s.status)}</td>
+      <td>${s.summary ? miniBar(s.summary.findings_by_severity) : `<span class="minibar-none">—</span>`}</td>
+      <td class="cell-time">${fmtTime(s.started_at || s.created_at)}</td>
+    </tr>`).join("");
+  $$("#opsBody tr[data-id]").forEach((tr) =>
+    tr.addEventListener("click", () => selectScan(tr.dataset.id)));
+}
 
-    const targetUrl = urlInput.value.trim();
+/* ── RED: operation detail ─────────────────────────────── */
+function selectScan(id) {
+  state.selectedId = id;
+  renderOps();
+  refreshDetail(id, false);
+}
+async function refreshDetail(id, quiet) {
+  let row;
+  try { row = await api("/api/scans/" + encodeURIComponent(id)); }
+  catch (_) { return; }
+  const panel = $("#detailPanel");
+  panel.hidden = false;
+  if (!quiet) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
+  $("#detailId").textContent = row.scan_id;
+  $("#detailStatus").className = "status-pill st-" + row.status;
+  $("#detailStatus").textContent = row.status;
+  $("#detailTarget").textContent = row.target;
+  $("#detailMode").innerHTML = modeChip((row.scan && row.scan.mode) || row.mode ||
+    (row.summary && row.summary.mode));
+  $("#detailStarted").textContent = fmtTime(row.started_at);
+  $("#detailFinished").textContent = fmtTime(row.finished_at);
+
+  const rec = row.scan;              // full scan_<id>.json once done; null while pending
+  const summary = (rec && rec.summary) || row.summary;
+  $("#detailRecon").textContent = summary ? summary.recon_observations : "—";
+
+  // Threat bar
+  renderThreat(summary ? summary.findings_by_severity : null,
+               summary ? summary.findings_total : 0);
+
+  // Tools
+  renderTools(rec ? rec.tools_run : null, row.status, row.error);
+
+  // Findings + recon (only present once the record is on disk)
+  renderFindings(rec ? rec.findings : null, row.status);
+  renderRecon(rec ? rec.recon : null, row.status);
+
+  // Report button — only meaningful once done with at least one finding
+  const canReport = row.status === "done" && summary && summary.findings_total > 0;
+  const rbtn = $("#reportBtn");
+  rbtn.hidden = !canReport;
+  rbtn.onclick = canReport ? () => downloadRedReport(row.scan_id) : null;
+}
+function renderThreat(bySev, total) {
+  const c = sevCounts(bySev);
+  const t = total || SEV_ORDER.reduce((a, k) => a + c[k], 0);
+  $("#threatTotal").textContent = t;
+  const bar = $("#threatBar");
+  if (!t) {
+    bar.innerHTML = `<div class="seg seg-empty"></div>`;
+  } else {
+    const seg = (k, cls) => c[k] ? `<div class="seg ${cls}" style="width:${(c[k] / t) * 100}%" title="${k}: ${c[k]}"></div>` : "";
+    bar.innerHTML = seg("Critical", "seg-crit") + seg("High", "seg-high") + seg("Medium", "seg-med") + seg("Low", "seg-low");
+  }
+  $("#threatLegend").innerHTML = SEV_ORDER.map((k) => {
+    const cls = { Critical: "var(--crit)", High: "var(--high)", Medium: "var(--med)", Low: "var(--low)" }[k];
+    return `<span class="leg"><i style="background:${cls}"></i>${k} · ${c[k]}</span>`;
+  }).join("");
+}
+function renderTools(tools, status, error) {
+  const strip = $("#toolStrip");
+  if (!tools || !tools.length) {
+    const label = status === "error" ? (error || "scan errored before tools ran")
+      : status === "done" ? "no tool data" : "waiting for the scan to run…";
+    strip.innerHTML = `<span class="tool-chip"><span class="tdot"></span>${esc(label)}</span>`;
+    return;
+  }
+  strip.innerHTML = tools.map((t) => `
+    <span class="tool-chip t-${esc(t.status)}" title="${esc(t.detail || "")}">
+      <span class="tdot"></span><b>${esc(t.name)}</b>
+      <span class="tcount">${esc(t.status)}${t.count ? " · " + t.count : ""}</span>
+    </span>`).join("");
+}
+function renderFindings(findings, status) {
+  const body = $("#findingsBody");
+  const count = $("#findingsCount");
+  if (findings == null) {
+    count.textContent = "";
+    body.innerHTML = `<tr class="no-rows"><td colspan="4">${
+      status === "done" ? "None on disk." : "Available when the scan finishes."}</td></tr>`;
+    return;
+  }
+  count.textContent = `(${findings.length})`;
+  if (!findings.length) {
+    body.innerHTML = `<tr class="no-rows"><td colspan="4">No confirmed findings — clean, or nothing in scope matched.</td></tr>`;
+    return;
+  }
+  body.innerHTML = findings.map((f) => `
+    <tr>
+      <td class="cell-type">${esc(f.type)}</td>
+      <td><span class="sev sev-${esc(f.severity)}">${esc(f.severity)}</span></td>
+      <td class="cell-loc" title="${esc(f.url)} — ${esc(f.parameter)}">${esc(f.url)}${f.parameter ? " · " + esc(f.parameter) : ""}</td>
+      <td class="cell-evidence" title="${esc(f.evidence)}">${esc(f.evidence)}</td>
+    </tr>`).join("");
+}
+function renderRecon(recon, status) {
+  const body = $("#reconBody");
+  if (recon == null) {
+    body.innerHTML = `<tr class="no-rows"><td colspan="4">${
+      status === "done" ? "None." : "Available when the scan finishes."}</td></tr>`;
+    return;
+  }
+  const rows = [];
+  for (const c of (recon.nuclei || [])) {
+    if (c.status !== "found") continue;
+    rows.push({ tool: "nuclei", sev: capitalize(c.severity), cat: c.template_id || "template", detail: c.name || c.matched_at || c.evidence });
+  }
+  for (const o of (recon.observations || [])) {
+    if (o.status !== "observed") continue;
+    rows.push({ tool: o.tool, sev: o.severity, cat: o.category, detail: o.title });
+  }
+  if (!rows.length) {
+    body.innerHTML = `<tr class="no-rows"><td colspan="4">No recon observations.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((r) => `
+    <tr>
+      <td class="cell-type">${esc(r.tool)}</td>
+      <td>${r.sev ? `<span class="sev sev-${esc(r.sev)}">${esc(r.sev)}</span>` : `<span class="dim mono">—</span>`}</td>
+      <td class="cell-loc">${esc(r.cat)}</td>
+      <td class="cell-evidence" title="${esc(r.detail)}">${esc(r.detail)}</td>
+    </tr>`).join("");
+}
+function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : s; }
+
+async function downloadRedReport(id) {
+  const btn = $("#reportBtn");
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Building…";
+  try {
+    const { report_url } = await api(`/scan/${encodeURIComponent(id)}/report`, { method: "POST" });
+    window.open(report_url, "_blank");
+    btn.textContent = "Red Report PDF";
+  } catch (e) {
+    btn.textContent = "Failed — retry";
+  } finally { btn.disabled = false; setTimeout(() => (btn.textContent = prev), 2500); }
+}
+
+/* ── RED: launch ───────────────────────────────────────── */
+function initLaunch() {
+  $("#scanForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const target = $("#targetUrl").value.trim();
+    const authorized = $("#authorized").checked;
+    const modeEl = document.querySelector('input[name="mode"]:checked');
+    const mode = modeEl ? modeEl.value : "standard";
+    if (!target) return note("launchNote", "Enter a target URL first.", "err");
+    if (!authorized) return note("launchNote", "Confirm you are authorized to test this target.", "err");
+
+    const btn = $("#launchBtn");
+    btn.disabled = true; note("launchNote", "Queuing operation…", "info");
     try {
-        // Disable scan button during scan
-        if (scanBtn) scanBtn.disabled = true;
-
-        const response = await fetch("/scan", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ target_url: targetUrl })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Server error (${response.status})`);
-        }
-
-        const data = await response.json();
-        currentScanId = data.scan_id;
-
-        // Show progress panel, hide findings panel
-        showPanel("progress-panel");
-        hidePanel("findings-panel");
-
-        // Hide red report download link if visible
-        const redDownload = document.getElementById("red-download-link");
-        if (redDownload) redDownload.classList.add("hidden");
-
-        // Clear any existing poll interval
-        if (pollInterval !== null) {
-            clearInterval(pollInterval);
-            pollInterval = null;
-        }
-
-        // Start polling every 2 seconds
-        pollInterval = setInterval(pollScanStatus, 2000);
-        // Also poll immediately for fast feedback
-        pollScanStatus();
-
-    } catch (error) {
-        showToast(error.message || "Failed to start scan", "error");
-        if (scanBtn) scanBtn.disabled = false;
-    }
+      const { scan_id } = await api("/api/scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_url: target, authorized, mode }),
+      });
+      note("launchNote", `Queued ${scan_id} (${mode}). Watch it in Operations →`, "ok");
+      await refreshScans();
+      selectScan(scan_id);
+    } catch (err) {
+      note("launchNote", err.status === 403 ? "Refused: " + err.message : (err.message || "Could not queue the scan."), "err");
+    } finally { btn.disabled = false; }
+  });
+  $("#detailClose").addEventListener("click", () => {
+    state.selectedId = null; $("#detailPanel").hidden = true; renderOps();
+  });
 }
 
-async function pollScanStatus() {
-    if (!currentScanId) return;
-
+/* ── BLUE: ingest + events ─────────────────────────────── */
+function initBlue() {
+  $("#uploadBtn").addEventListener("click", async () => {
+    const file = $("#logFile").files[0];
+    if (!file) return note("ingestNote", "Choose a log file to analyze.", "err");
+    const btn = $("#uploadBtn"); btn.disabled = true;
+    note("ingestNote", `Parsing ${file.name}…`, "info");
+    const fd = new FormData(); fd.append("file", file);
     try {
-        const response = await fetch(`/scan/${currentScanId}/status`);
+      const data = await api("/analyze-logs", { method: "POST", body: fd });
+      onEvents(data);
+      note("ingestNote", `Normalized ${data.event_count} event${data.event_count === 1 ? "" : "s"} from ${file.name}.`, "ok");
+    } catch (e) { note("ingestNote", e.message || "Could not parse that file.", "err"); }
+    finally { btn.disabled = false; }
+  });
 
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to fetch scan status (${response.status})`);
-        }
-
-        const data = await response.json();
-
-        updateProgress(data.status, data.findings_count, data.current_module || "");
-
-        if (data.status === "done") {
-            stopPolling();
-            await loadFindings();
-            showToast("Scan completed successfully!", "success");
-        } else if (data.status === "error") {
-            stopPolling();
-            showToast(data.error || "Scan encountered an error", "error");
-        }
-
-    } catch (error) {
-        showToast(error.message || "Failed to poll scan status", "error");
-        stopPolling();
-    }
-}
-
-function stopPolling() {
-    if (pollInterval !== null) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-    }
-    // Re-enable scan button
-    const scanBtn = document.getElementById("start-scan-btn");
-    if (scanBtn) scanBtn.disabled = false;
-}
-
-async function loadFindings() {
-    if (!currentScanId) {
-        showToast("No active scan", "error");
-        return;
-    }
-
+  $("#wazuhBtn").addEventListener("click", async () => {
+    const minutes = parseInt($("#wazuhMinutes").value, 10) || 30;
+    const btn = $("#wazuhBtn"); btn.disabled = true;
+    note("ingestNote", `Fetching Wazuh alerts from the last ${minutes} min…`, "info");
     try {
-        const response = await fetch(`/scan/${currentScanId}/findings`);
+      const data = await api("/fetch-wazuh-alerts", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ minutes }),
+      });
+      onEvents(data);
+      note("ingestNote", `Pulled ${data.event_count} alert${data.event_count === 1 ? "" : "s"} from Wazuh.`, "ok");
+    } catch (e) { note("ingestNote", e.message || "Wazuh is unreachable right now.", "err"); }
+    finally { btn.disabled = false; }
+  });
 
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to fetch findings (${response.status})`);
-        }
-
-        const data = await response.json();
-        const findings = data.findings || [];
-
-        renderFindings(findings);
-        showPanel("findings-panel");
-
-    } catch (error) {
-        showToast(error.message || "Failed to load findings", "error");
-    }
-}
-
-function renderFindings(findings) {
-    const container = document.getElementById("findings-container");
-    if (!container) return;
-
-    if (!findings || findings.length === 0) {
-        container.innerHTML = `
-            <div class="empty-findings">
-                <p>No vulnerabilities found — target appears clean.</p>
-            </div>`;
-        return;
-    }
-
-    let html = "";
-    for (const f of findings) {
-        const colors = SEVERITY_COLORS[f.severity] || SEVERITY_COLORS["Medium"];
-        const evidence = f.evidence || "";
-        const truncatedEvidence = evidence.length > 150
-            ? evidence.substring(0, 147) + "..."
-            : evidence;
-
-        html += `
-            <div class="finding-card" style="border-left: 4px solid ${colors.border}; background: ${colors.bg};">
-                <div class="finding-header">
-                    <span class="finding-type-badge" style="background: ${colors.badgeBg}; color: ${colors.badgeText};">
-                        ${escapeHtml(f.type)}
-                    </span>
-                    <span class="finding-severity" style="color: ${colors.border}; font-weight: 600;">
-                        ${escapeHtml(f.severity)}
-                    </span>
-                </div>
-                <div class="finding-body">
-                    <div class="finding-row">
-                        <strong>URL:</strong>
-                        <code>${escapeHtml(f.url)}</code>
-                    </div>
-                    <div class="finding-row">
-                        <strong>Parameter:</strong>
-                        <span>${escapeHtml(f.parameter || "—")}</span>
-                    </div>
-                    <div class="finding-row">
-                        <strong>Payload:</strong>
-                        <code>${escapeHtml(f.payload || "—")}</code>
-                    </div>
-                    <div class="finding-row">
-                        <strong>Evidence:</strong>
-                        <span class="evidence-text">${escapeHtml(truncatedEvidence)}</span>
-                    </div>
-                </div>
-            </div>`;
-    }
-
-    container.innerHTML = html;
-}
-
-/**
- * Alias / compatibility wrapper — same as renderFindings but named
- * for callers that use updateScanResults(findings).
- */
-function updateScanResults(findings) {
-    renderFindings(findings);
-}
-
-async function generateRedReport() {
-    if (!currentScanId) {
-        showToast("No scan to report on — run a scan first", "error");
-        return;
-    }
-
-    const btn = document.getElementById("generate-red-report-btn");
-    const downloadLink = document.getElementById("red-download-link");
-
+  $("#blueReportBtn").addEventListener("click", async () => {
+    if (!state.blue.events.length) return;
+    const btn = $("#blueReportBtn"); const prev = btn.textContent;
+    btn.disabled = true; btn.textContent = "Building…";
     try {
-        // Show loading spinner
-        if (btn) {
-            btn.disabled = true;
-            btn.dataset.originalText = btn.textContent;
-            btn.innerHTML = '<span class="spinner"></span> Generating...';
-        }
-
-        const response = await fetch(`/scan/${currentScanId}/report`, {
-            method: "POST"
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to generate report (${response.status})`);
-        }
-
-        const data = await response.json();
-
-        if (downloadLink && data.report_url) {
-            downloadLink.href = data.report_url;
-            downloadLink.classList.remove("hidden");
-            showToast("Red Team report generated!", "success");
-        }
-
-    } catch (error) {
-        showToast(error.message || "Failed to generate red team report", "error");
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            if (btn.dataset.originalText) {
-                btn.textContent = btn.dataset.originalText;
-                delete btn.dataset.originalText;
-            }
-        }
-    }
+      const payload = state.blue.analysisId
+        ? { analysis_id: state.blue.analysisId } : { events: state.blue.events };
+      const { report_url } = await api("/generate-blue-report", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      window.open(report_url, "_blank"); btn.textContent = "Blue Report PDF";
+    } catch (e) { btn.textContent = "Failed — retry"; }
+    finally { btn.disabled = false; setTimeout(() => (btn.textContent = prev), 2500); }
+  });
+}
+function onEvents(data) {
+  state.blue.events = data.events || [];
+  state.blue.analysisId = data.analysis_id || null;
+  renderEvents();
+  renderDist();
+  $("#blueActions").hidden = state.blue.events.length === 0;
+  updateStatusline();
+}
+function lvlClass(n) { return n >= 12 ? "Critical" : n >= 8 ? "High" : n >= 4 ? "Medium" : "Low"; }
+function renderEvents() {
+  const body = $("#eventsBody");
+  const ev = state.blue.events;
+  $("#eventCount").textContent = ev.length;
+  if (!ev.length) {
+    body.innerHTML = `<tr class="empty-row"><td colspan="6">Ingest a log file or fetch Wazuh alerts to populate the feed.</td></tr>`;
+    return;
+  }
+  body.innerHTML = ev.map((e) => {
+    const sev = lvlClass(e.severity_level || 0);
+    return `<tr>
+      <td><span class="lvl-pill sev-${sev}" title="severity level ${esc(e.severity_level)}">${esc(e.severity_level)}</span></td>
+      <td class="cell-time">${fmtTime(e.timestamp)}</td>
+      <td class="mono dim">${esc(e.rule_id)}</td>
+      <td class="cell-evidence" title="${esc(e.description)}">${esc(e.description)}</td>
+      <td class="mono">${esc(e.src_ip)}</td>
+      <td class="cell-loc" title="${esc(e.target_url)}">${esc(e.target_url)}</td>
+    </tr>`;
+  }).join("");
+}
+function renderDist() {
+  const buckets = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+  for (const e of state.blue.events) buckets[lvlClass(e.severity_level || 0)]++;
+  const max = Math.max(1, ...Object.values(buckets));
+  const box = $("#distBody");
+  if (!state.blue.events.length) { box.innerHTML = `<p class="empty-note">No events ingested yet.</p>`; return; }
+  const color = { Critical: "var(--crit)", High: "var(--high)", Medium: "var(--med)", Low: "var(--low)" };
+  box.innerHTML = SEV_ORDER.map((k) => `
+    <div class="dist-row">
+      <span class="dist-k">${k}</span>
+      <div class="dist-track"><div class="dist-fill" style="width:${(buckets[k] / max) * 100}%;background:${color[k]}"></div></div>
+      <span class="dist-n">${buckets[k]}</span>
+    </div>`).join("");
 }
 
-// ══════════════════════════════════════════════════════════════
-//  Blue Team — File Upload & Drag-and-Drop
-// ══════════════════════════════════════════════════════════════
-
-function onFileSelected(input) {
-    const filenameEl = document.getElementById("selected-filename");
-    const analyzeBtn = document.getElementById("analyze-btn");
-
-    if (input.files && input.files.length > 0) {
-        const filename = input.files[0].name;
-        if (filenameEl) filenameEl.textContent = filename;
-        if (analyzeBtn) analyzeBtn.disabled = false;
-    } else {
-        if (filenameEl) filenameEl.textContent = "";
-        if (analyzeBtn) analyzeBtn.disabled = true;
-    }
+/* ── Status line telemetry ─────────────────────────────── */
+function updateStatusline() {
+  const active = state.scans.filter((s) => s.status === "queued" || s.status === "running").length;
+  let findings = 0; const sev = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+  for (const s of state.scans) {
+    if (!s.summary) continue;
+    findings += s.summary.findings_total || 0;
+    const c = sevCounts(s.summary.findings_by_severity);
+    for (const k of SEV_ORDER) sev[k] += c[k];
+  }
+  $("#slActive").textContent = `${active} active`;
+  $("#slFindings").textContent = findings;
+  $("#slCrit").textContent = "C " + sev.Critical;
+  $("#slHigh").textContent = "H " + sev.High;
+  $("#slMed").textContent = "M " + sev.Medium;
+  $("#slLow").textContent = "L " + sev.Low;
+  $("#slEvents").textContent = state.blue.events.length;
+  $("#slTick").textContent = active ? "scanning" : "standby";
 }
 
-function handleDragOver(event) {
-    event.preventDefault();
-    const dropZone = document.getElementById("drop-zone");
-    if (dropZone) dropZone.classList.add("drag-active");
+/* ── boot ──────────────────────────────────────────────── */
+function init() {
+  $$(".nav-item").forEach((b) => b.addEventListener("click", () => setView(b.dataset.nav)));
+  startClock();
+  initLaunch();
+  initBlue();
+  setView("red");
+  refreshScans();
+  setInterval(refreshScans, 3000);   // live queue + running-scan detail
 }
-
-function handleDrop(event) {
-    event.preventDefault();
-    const dropZone = document.getElementById("drop-zone");
-    if (dropZone) dropZone.classList.remove("drag-active");
-
-    const fileInput = document.getElementById("log-file-input");
-    if (!fileInput) return;
-
-    const files = event.dataTransfer.files;
-    if (files.length > 0) {
-        // Create a new DataTransfer to set the file on the input
-        const dt = new DataTransfer();
-        dt.items.add(files[0]);
-        fileInput.files = dt.files;
-
-        // Update UI
-        const filenameEl = document.getElementById("selected-filename");
-        const analyzeBtn = document.getElementById("analyze-btn");
-        if (filenameEl) filenameEl.textContent = files[0].name;
-        if (analyzeBtn) analyzeBtn.disabled = false;
-    }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  Blue Team — Fetch Wazuh Alerts & Analyze Logs
-// ══════════════════════════════════════════════════════════════
-
-async function fetchWazuhAlerts() {
-    const timeframeSelect = document.getElementById("timeframe-select");
-    const fetchBtn = document.getElementById("fetch-wazuh-btn");
-
-    const minutes = timeframeSelect ? parseInt(timeframeSelect.value, 10) || 30 : 30;
-
-    try {
-        // Show loading
-        showPanel("events-loading");
-        hidePanel("events-panel");
-        if (fetchBtn) fetchBtn.disabled = true;
-
-        const response = await fetch("/fetch-wazuh-alerts", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ minutes })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to fetch alerts (${response.status})`);
-        }
-
-        const data = await response.json();
-
-        if (data.analysis_id) {
-            currentAnalysisId = data.analysis_id;
-        }
-
-        displayEvents(data.events || []);
-
-    } catch (error) {
-        showToast(error.message || "Failed to fetch Wazuh alerts", "error");
-        hidePanel("events-loading");
-    } finally {
-        if (fetchBtn) fetchBtn.disabled = false;
-    }
-}
-
-async function analyzeLogs() {
-    const fileInput = document.getElementById("log-file-input");
-
-    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
-        showToast("Please select a log file first", "error");
-        return;
-    }
-
-    const analyzeBtn = document.getElementById("analyze-btn");
-
-    try {
-        // Show loading
-        showPanel("events-loading");
-        hidePanel("events-panel");
-        if (analyzeBtn) analyzeBtn.disabled = true;
-
-        const formData = new FormData();
-        formData.append("file", fileInput.files[0]);
-
-        const response = await fetch("/analyze-logs", {
-            method: "POST",
-            body: formData
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to analyze logs (${response.status})`);
-        }
-
-        const data = await response.json();
-
-        if (data.analysis_id) {
-            currentAnalysisId = data.analysis_id;
-        }
-
-        displayEvents(data.events || []);
-
-    } catch (error) {
-        showToast(error.message || "Failed to analyze logs", "error");
-        hidePanel("events-loading");
-    } finally {
-        if (analyzeBtn) analyzeBtn.disabled = false;
-    }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  Blue Team — Display Events & Generate Report
-// ══════════════════════════════════════════════════════════════
-
-function displayEvents(events) {
-    const tbody = document.getElementById("events-tbody");
-    if (!tbody) return;
-
-    if (!events || events.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="7" class="empty-events">
-                    No events to display.
-                </td>
-            </tr>`;
-    } else {
-        let html = "";
-        for (const ev of events) {
-            const sourceBadgeColor = ev.source === "Wazuh" ? "#2563eb" : "#16a34a";
-            const severityClass = ev.severity_level >= 12 ? "severity-high" : "";
-            const timestamp = ev.timestamp
-                ? new Date(ev.timestamp).toLocaleString()
-                : "—";
-
-            html += `
-                <tr>
-                    <td class="event-timestamp">${escapeHtml(timestamp)}</td>
-                    <td>
-                        <span class="source-badge" style="background: ${sourceBadgeColor};">
-                            ${escapeHtml(ev.source || "—")}
-                        </span>
-                    </td>
-                    <td><code>${escapeHtml(ev.rule_id || "—")}</code></td>
-                    <td class="${severityClass}">${ev.severity_level ?? "—"}</td>
-                    <td>${escapeHtml(ev.description || "—")}</td>
-                    <td><code>${escapeHtml(ev.src_ip || "—")}</code></td>
-                    <td><code class="target-url-cell">${escapeHtml(ev.target_url || "—")}</code></td>
-                </tr>`;
-        }
-        tbody.innerHTML = html;
-    }
-
-    // Show events panel, hide loading
-    showPanel("events-panel");
-    hidePanel("events-loading");
-}
-
-async function generateBlueReport() {
-    if (!currentAnalysisId) {
-        showToast("No analysis to report on — fetch alerts or analyze logs first", "error");
-        return;
-    }
-
-    const btn = document.getElementById("generate-blue-report-btn");
-    const downloadLink = document.getElementById("blue-download-link");
-
-    try {
-        // Show loading spinner
-        if (btn) {
-            btn.disabled = true;
-            btn.dataset.originalText = btn.textContent;
-            btn.innerHTML = '<span class="spinner"></span> Generating...';
-        }
-
-        const response = await fetch("/generate-blue-report", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ analysis_id: currentAnalysisId })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to generate report (${response.status})`);
-        }
-
-        const data = await response.json();
-
-        if (downloadLink && data.report_url) {
-            downloadLink.href = data.report_url;
-            downloadLink.classList.remove("hidden");
-            showToast("Blue Team report generated!", "success");
-        }
-
-    } catch (error) {
-        showToast(error.message || "Failed to generate blue team report", "error");
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            if (btn.dataset.originalText) {
-                btn.textContent = btn.dataset.originalText;
-                delete btn.dataset.originalText;
-            }
-        }
-    }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  UI Helpers
-// ══════════════════════════════════════════════════════════════
-
-function showToast(message, type) {
-    const toast = document.getElementById("toast");
-    if (!toast) return;
-
-    type = type || "info";
-
-    // Set background color based on type
-    const bgColors = {
-        info:    "#2563eb",
-        success: "#16a34a",
-        error:   "#dc2626"
-    };
-    const bgColor = bgColors[type] || bgColors.info;
-
-    toast.textContent = message;
-    toast.style.background = bgColor;
-    toast.style.display = "block";
-    toast.classList.remove("hidden");
-
-    // Clear any existing auto-hide timer (clearTimeout no-ops on null/undefined)
-    clearTimeout(toast._hideTimeout);
-
-    // Auto-hide after 4 seconds
-    toast._hideTimeout = setTimeout(() => {
-        toast.style.display = "none";
-        toast.classList.add("hidden");
-    }, 4000);
-}
-
-function showPanel(id) {
-    const panel = document.getElementById(id);
-    if (panel) panel.classList.remove("hidden");
-}
-
-function hidePanel(id) {
-    const panel = document.getElementById(id);
-    if (panel) panel.classList.add("hidden");
-}
-
-function updateProgress(status, count, module) {
-    const progressBar   = document.getElementById("progress-bar");
-    const statusText    = document.getElementById("status-text");
-    const currentModule = document.getElementById("current-module");
-    const findingsCount = document.getElementById("findings-count");
-
-    const pct = STATUS_PROGRESS[status] !== undefined ? STATUS_PROGRESS[status] : 0;
-    const label = STATUS_LABELS[status] || status;
-
-    if (progressBar) {
-        progressBar.style.width = pct + "%";
-        progressBar.setAttribute("aria-valuenow", String(pct));
-    }
-    if (statusText) statusText.textContent = label;
-    if (currentModule && module) currentModule.textContent = module;
-    if (findingsCount && count !== undefined && count !== null) {
-        findingsCount.textContent = count;
-    }
-}
-
-// ─── Utility ────────────────────────────────────────────────
-
-function escapeHtml(str) {
-    if (!str) return "";
-    const div = document.createElement("div");
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
-}
+document.addEventListener("DOMContentLoaded", init);

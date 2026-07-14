@@ -38,6 +38,7 @@ in [`AGENTS.md`'s "Agent engine" section](AGENTS.md#agent-engine-engine).
 | ffuf + pinned wordlist (directory/file brute-force) | Done — pinned sandbox install (v2.1.0 + SecLists common.txt) + deterministic run_ffuf runner, chained off httpx's live URLs; live end-to-end run confirmed — see HANDOFF |
 | Unified scan orchestrator (crawl→vuln agents→recon→one scan_<id>.json) | Done — modules/scan.py run_scan; aggregates findings + recon under ONE shared scan_id alongside the existing per-tool outputs; schemas.py + integration.py untouched; 9 offline tests + live Juice Shop run confirmed. NOT yet wired into integration.py/app.py (next) — see HANDOFF |
 | Persistent scan store (queue + status lifecycle + history) | Done — storage/scan_store.py; sqlite outputs/redsee.db (gitignored), bounded worker pool, gating up front, restart-survival + orphan reconcile; 10 offline tests + live enqueue→done confirmed. NOT yet wired into Flask routes (next) — see HANDOFF |
+| Param-targeted injection + scan modes (fast/standard/deep) + parallelism | Done — engine/params.py (param extraction/ranking), ScanProfile modes in modules/scan.py, direct-agent depth threading, bounded concurrent stages, nuclei memory-scoped by template PATH (256 MB OOM fix), mode threaded store→app→UI. D-024. Live-proven: nuclei completes (67 s), standard on /market sinks → 3 real XSS findings on param endpoints only. schemas.py/sandbox.py untouched |
 | Provider-agnostic BYOK LLM layer | Done |
 | Operator dashboard (queue / watch / browse history) | Later |
 | MCP server control surface | Later |
@@ -57,6 +58,43 @@ whenever a milestone's state changes.
 **Next:** ...
 **Blockers:** ...
 -->
+
+### 2026-07-14 — param-targeted injection + scan modes + nuclei OOM fix (D-024)
+
+**Done:** Reworked `run_scan` (see D-024). (1) NEW `engine/params.py` extracts
+injectable params (query-string keys + form/body fields, minus submit/CSRF controls)
+per crawled endpoint; param-less endpoints are EXCLUDED from sqli/xss and targets are
+ranked deterministically (forms→links→api/page, more-params-first, URL tie-break) for
+capping. (2) Three scan MODES — `fast` (top 5 params, shallow level/risk 1, 60 s
+injection timeout, httpx+tlsx only), `standard` (10 params, level 3, +scoped nuclei
++ffuf), `deep` (all params, agent-default depth, full recon) — as a `ScanProfile`
+table (NOT schemas.py). The orchestrator drives the agents DIRECTLY (scan_sqli's
+signature is frozen), threading per-mode `max_level/max_risk/max_iterations/timeout_sec`;
+`timeout_sec` added (backward-compatibly) to run_sqli_agent/run_xss_agent, `default_tags`
++`timeout_sec` to run_nuclei_agent. (3) Independent tools run CONCURRENTLY via a
+ThreadPoolExecutor bounded by `REDSEE_MAX_PARALLEL_SANDBOXES` (default 2); ffuf still
+chained after httpx; tools_run assembled in fixed order. (4) **Fixed the nuclei
+"timeout" — it was an OOM**: the 256 MB sandbox cap (frozen) can't hold the full
+template corpus, so `-t` now points at memory-safe category dirs
+(`http/exposures`+`http/misconfiguration`, ~1163 templates) with `-timeout 5 -retries 0
+-c 15`. (5) `mode` threaded through enqueue_scan (new DB column) → worker → run_scan;
+app `/api/scans` accepts `mode`; launch UI has a Fast/Standard/Deep selector; history +
+detail show a mode pill. schemas.py + engine/sandbox.py UNTOUCHED (empty diff).
+
+**Live-proven (redsees.com:3000):** scoped nuclei COMPLETES through the real sandbox
+(`status=found exit=0 timed_out=False wall=67s`; was OOM/timeout). `fast` on Juice Shop
+= 17 s (crawler surfaces 0 param endpoints → injection correctly SKIPPED). `standard` on
+the `/market/*` sinks = 698 s, all 7 tools ran, nuclei completed, and Dalfox confirmed
+**3 real High XSS findings** on exactly the 3 param-bearing endpoints (q/name/path).
+Tests: `test_params.py` (14) + `test_scan_modes.py` (14) NEW, `test_orchestrator.py`
+mocks updated; 46/46 in the primary set + 77 regression pass (6 pre-existing DVWA-live
+failures need :8080, fail identically on a clean tree).
+
+**Next:** idor/auth agents. Optional: wire run_scan mode into any remaining call sites;
+tune deep-mode nuclei to a larger memory-safe dir set if desired.
+**Blockers:** None. Note: the themed Juice Shop (:3001) is fragile under scanning and
+crashed twice during nuclei probes; restart via `demo-helper.sh` (`node build/app.js`,
+NODE_CONFIG_ENV=redsees) if `/` 502s.
 
 ### 2026-07-13 — persistent scan store (storage/scan_store.py)
 

@@ -47,7 +47,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from modules.scan import run_scan
+from modules.scan import run_scan, DEFAULT_MODE
 from engine.scope import (
     ScopeError, assert_in_scope, load_scope_config, require_authorization,
 )
@@ -126,6 +126,7 @@ class ScanStore:
                     scan_id        TEXT PRIMARY KEY,
                     target         TEXT NOT NULL,
                     status         TEXT NOT NULL,
+                    mode           TEXT,
                     created_at     TEXT NOT NULL,
                     started_at     TEXT,
                     finished_at    TEXT,
@@ -135,6 +136,12 @@ class ScanStore:
                 )
                 """
             )
+            # Additive migration for a DB created before scan modes existed — the
+            # column is harmless (NULL -> the run_scan default) on old rows.
+            try:
+                conn.execute("ALTER TABLE scans ADD COLUMN mode TEXT")
+            except sqlite3.OperationalError:
+                pass                                  # column already present
 
     def _reconcile_orphans(self) -> None:
         """Any row still 'running' when a store initializes belongs to a process
@@ -199,11 +206,12 @@ class ScanStore:
         if row is None:                      # row deleted out from under us — nothing to do
             return
         target = row["target"]
+        mode = row.get("mode") or DEFAULT_MODE
         scope_config = self._scope_by_id.pop(scan_id, None)
 
         self._update(scan_id, status=_STATUS_RUNNING, started_at=_ts())
         try:
-            record = run_scan(target, scan_id=scan_id, scope_config=scope_config)
+            record = run_scan(target, scan_id=scan_id, scope_config=scope_config, mode=mode)
         except Exception as exc:             # noqa: BLE001 - record ANY failure, never stay running
             self._update(scan_id, status=_STATUS_ERROR,
                          error=f"{type(exc).__name__}: {exc}", finished_at=_ts())
@@ -230,9 +238,13 @@ class ScanStore:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def enqueue_scan(self, target_url: str, *, scope_config=None) -> str:
+    def enqueue_scan(self, target_url: str, *, scope_config=None,
+                     mode: str = DEFAULT_MODE) -> str:
         """Validate authorization + scope UP FRONT, persist a queued row, hand the
         scan to the worker pool, and return its scan_id. Does NOT run inline.
+
+        `mode` (fast / standard / deep) is persisted with the row and passed to
+        run_scan by the worker (an unknown mode degrades to the default there).
 
         Raises ScopeError (before any row is created) if unauthorized or the
         target is out of scope — enqueue never bypasses the scope gate.
@@ -242,11 +254,13 @@ class ScanStore:
         require_authorization(scope_config)          # raises before persisting
         assert_in_scope(target_url, scope_config)    # raises before persisting
 
+        mode = (mode or DEFAULT_MODE)
         scan_id = uuid.uuid4().hex[:8]
         with self._db() as conn:
             conn.execute(
-                "INSERT INTO scans (scan_id, target, status, created_at) VALUES (?, ?, ?, ?)",
-                (scan_id, target_url, _STATUS_QUEUED, _ts()),
+                "INSERT INTO scans (scan_id, target, status, mode, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (scan_id, target_url, _STATUS_QUEUED, mode, _ts()),
             )
         self._scope_by_id[scan_id] = scope_config    # set BEFORE queueing so the worker sees it
         self._queue.put(scan_id)
@@ -297,8 +311,8 @@ def _store() -> ScanStore:
     return _default_store
 
 
-def enqueue_scan(target_url: str, *, scope_config=None) -> str:
-    return _store().enqueue_scan(target_url, scope_config=scope_config)
+def enqueue_scan(target_url: str, *, scope_config=None, mode: str = DEFAULT_MODE) -> str:
+    return _store().enqueue_scan(target_url, scope_config=scope_config, mode=mode)
 
 
 def list_scans(*, limit: int = 50, offset: int = 0, status=None) -> list:

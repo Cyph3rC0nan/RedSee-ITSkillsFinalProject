@@ -437,7 +437,8 @@ def _scan_transcript(url: str, tool_result: dict) -> dict:
 
 def run_xss_agent(endpoints: list, *, max_iterations: int = 6, scope_config=None,
                   llm_config=None, llm_client=None,
-                  auth_cookie: str | None = None) -> XssAgentResult:
+                  auth_cookie: str | None = None,
+                  timeout_sec: int | None = None) -> XssAgentResult:
     """Drive the LLM to hunt REFLECTED XSS across `endpoints` via the sandboxed
     run_dalfox tool.
 
@@ -449,10 +450,14 @@ def run_xss_agent(endpoints: list, *, max_iterations: int = 6, scope_config=None
     _MAX_XSS_RUNS_PER_ENDPOINT Dalfox runs per endpoint.
 
     Fakes may be injected for tests via scope_config / llm_config / llm_client.
-    injectable is derived SOLELY from parsed Dalfox [POC]/[V] output.
+    injectable is derived SOLELY from parsed Dalfox [POC]/[V] output. `timeout_sec`
+    (optional) bounds each sandboxed Dalfox run (default _SANDBOX_TIMEOUT_SEC), so a
+    fast scan mode can cap how long one endpoint may take.
     """
     if scope_config is None:
         scope_config = load_scope_config()
+
+    scan_timeout = timeout_sec if timeout_sec is not None else _SANDBOX_TIMEOUT_SEC
 
     # ONE budget tracker for the whole run.
     if llm_client is None:
@@ -539,7 +544,8 @@ def run_xss_agent(endpoints: list, *, max_iterations: int = 6, scope_config=None
                 }, None
             else:
                 tool_result, candidate = _execute_run_dalfox(
-                    arguments, scope_config=scope_config, auth_cookie=auth_cookie)
+                    arguments, scope_config=scope_config, auth_cookie=auth_cookie,
+                    timeout_sec=scan_timeout)
                 if candidate is not None:
                     candidates.append(candidate)
                     tool_executions += 1
@@ -587,7 +593,8 @@ def run_xss_agent(endpoints: list, *, max_iterations: int = 6, scope_config=None
                 continue                              # already run in the agent phase
 
             tool_result, candidate = _run_one_scan(
-                url, param=param, scope_config=scope_config, auth_cookie=auth_cookie)
+                url, param=param, scope_config=scope_config, auth_cookie=auth_cookie,
+                timeout_sec=scan_timeout)
             tool_result["target_url"] = url
             transcript.append(_scan_transcript(url, tool_result))
             if candidate is not None:

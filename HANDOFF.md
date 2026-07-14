@@ -1,19 +1,38 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-13T19:30:00Z
-**Current milestone:** persistent scan store (`storage/scan_store.py`) — SQLite-backed queue + status lifecycle + history over `modules.scan.run_scan`, surviving process restart. Branch `feat/nuclei`, uncommitted (orchestrator itself already committed at 490180e).
+**Last updated:** 2026-07-14T10:05:00Z
+**Current milestone:** param-targeted injection + scan modes (fast/standard/deep) +
+concurrency + nuclei OOM fix (D-024). Branch `feat/nuclei`, UNCOMMITTED. Also still
+uncommitted from the prior session: the dashboard rework (app.py/templates/static) and
+the store's Flask wiring.
 
 ## Next step
-Scan store is COMPLETE — commit it (storage/scan_store.py + storage/__init__.py +
-tests/test_scan_store.py + the .gitignore `outputs/*.db*` line; outputs/redsee.db is
-gitignored, never commit it). The NEXT prompt wires the store into app.py's Flask routes
-(enqueue/list/get endpoints + the dashboard tab) — deliberately NOT done here. Longer-standing:
-idor/auth agents.
+This task (D-024) is COMPLETE and live-proven — commit it. Suggested scope for the commit:
+`engine/params.py` (new), `modules/scan.py`, `engine/agent.py`, `engine/xss_agent.py`,
+`engine/nuclei_agent.py`, `storage/scan_store.py`, `app.py`, `templates/index.html`,
+`static/{script.js,style.css}`, `tests/test_params.py` (new), `tests/test_scan_modes.py`
+(new), `tests/test_orchestrator.py` (mocks updated), `tests/test_nuclei_agent.py` (one
+template assertion), `DECISIONS.md`/`PROGRESS.md`/`HANDOFF.md`. Longer-standing: idor/auth
+agents.
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
+- Param-targeted injection + scan modes + nuclei OOM fix (D-024). NEW `engine/params.py`
+  extracts injectable params (query + form/body, minus submit/CSRF) and ranks targets
+  (forms→links→api, more-params-first) so injection runs ONLY on param-bearing endpoints,
+  capped per mode. `run_scan(mode=fast|standard|deep)` drives the engine agents DIRECTLY
+  (scan_sqli's sig is frozen) with per-mode depth; `timeout_sec` threaded into sqli/xss
+  agents, `default_tags`+`timeout_sec` into nuclei. Independent tools run concurrently via
+  a ThreadPoolExecutor bounded by `REDSEE_MAX_PARALLEL_SANDBOXES` (default 2); ffuf still
+  after httpx. **nuclei "timeout" was an OOM**: 256 MB sandbox (frozen) can't load the full
+  corpus, so `-t` now targets memory-safe dirs (http/exposures+http/misconfiguration) with
+  `-timeout 5 -retries 0 -c 15`. mode threaded enqueue_scan(new DB col)→worker→run_scan;
+  app `/api/scans` accepts mode; UI Fast/Standard/Deep selector + mode pill. schemas.py +
+  engine/sandbox.py UNTOUCHED. Live: nuclei completes through the sandbox (status=found,
+  67 s); standard on /market sinks → 3 real High XSS on q/name/path; 46+77 tests pass —
+  2026-07-14
 - Built `storage/scan_store.py` — persistent scan store (queue + lifecycle + history) over
   run_scan. `enqueue_scan(target, *, scope_config=None)` gates UP FRONT (require_authorization
   + assert_in_scope; refuses with ScopeError BEFORE any row is created), inserts a `queued`
@@ -69,10 +88,6 @@ nothing
   `recon_observations` list as httpx/tlsx -> zero report_io changes needed (already generic).
   23 new tests in tests/test_ffuf_recon.py vs a REAL captured fixture; 115-test full
   regression clean; schemas.py untouched — 2026-07-13
-- Installed pinned ffuf v2.1.0 + bundled ONE pinned SecLists wordlist (common.txt, ~4750
-  lines, commit-sha-pinned, sha256-verified) into docker/sandbox/Dockerfile — same
-  reproducible-release pattern as every other sandbox tool. No XDG bake needed (ffuf writes
-  nothing at startup, unlike the ProjectDiscovery tools). D-020 — 2026-07-13
 
 ## Key decisions
 - The persistent scan store lives at `storage/scan_store.py` (a NEW top-level package), NOT
@@ -107,19 +122,13 @@ nothing
   changes. modules/recon.py is the standalone entry for all four tools, not in
   integration.py's resolver. The orchestrator reuses this same write_outputs call unchanged
   (proven byte-for-byte vs a direct call in tests/test_orchestrator.py).
-- D-019/D-020 pattern ("pin/configure to avoid a problematic real-world behavior, verified
-  against a BUILT image + a real target, not assumed") now has a THIRD instance: ffuf's fixed
-  profile MUST include `-ac` (auto-calibration), not just `-mc` status-code matching — proven
-  via the live Juice-Shop smoke (see above). A flag set that looks right in offline unit
-  tests can still be wrong against real-world target behavior — always live-smoke-test new
-  tool integrations before calling them done.
-- REDSEE_RATE_LIMIT is honored DIRECTLY as ffuf's `-rate` (req/SECOND) rather than converted
-  per-minute — the literal per-minute conversion would make the bundled wordlist take ~79min
-  at the default 60. Ceiling-bounded at 50 req/s regardless of configured value. httpx/tlsx's
-  own rate handling is unchanged.
-- ffuf's targets chain from httpx's LIVE observations (`_live_urls_from_httpx`), not the raw
-  seed list — a target httpx couldn't reach is unlikely reachable for ffuf's noisier
-  brute-force either. Falls back to seed targets when httpx found nothing live.
+- D-024 (this session): injection runs ONLY on param-bearing endpoints; scan MODES tune
+  breadth/depth/recon; orchestrator drives the engine agents DIRECTLY (scan_sqli sig frozen);
+  nuclei "timeout" was a 256 MB OOM, fixed by scoping `-t` to memory-safe template dirs. Live-
+  smoke-test-before-done held again: the nuclei fix was only found by running THROUGH the real
+  sandbox (raw `--network host` runs looked fine; the sandbox's 256 MB cap OOM-killed it).
+- ffuf/recon decisions (`-ac` auto-calibration required, REDSEE_RATE_LIMIT as `-rate` req/s
+  ceilinged at 50, ffuf chained off httpx's live URLs) — see DECISIONS.md D-020/D-021.
 - Prior decisions (Dalfox v2.13.0 pin, nuclei v3.11.0 + templates v10.4.5, httpx v1.9.0 not
   v1.10.0/phone-home, XDG under /tmp for nuclei/httpx/tlsx, tlsx host/port formula, recon_tools
   has no model in the loop) unchanged this session — see DECISIONS.md D-012 through D-020 for
@@ -150,20 +159,38 @@ nothing
   stale-subnet ones (re-issue each `-A` as `-D`); never touch 172.17 (the live docker0 bridge).
 - To do a lightweight live orchestrator smoke WITHOUT the slow per-endpoint vuln agents, set
   `REDSEE_LLM_MAX_USD=0` (agents budget-stop instantly; httpx/tlsx/ffuf still run live).
+- nuclei in the 256 MB sandbox loads templates INTO memory; the full corpus OOM-kills it
+  (exit 137, looks like a "timeout"). Fixed by scoping `-t` to memory-safe dirs (D-024). If
+  you widen `_DEFAULT_TEMPLATE_PATHS`, re-verify under `docker run --memory 256m` first —
+  adding `technologies` or `cve` OOMs.
+- Concurrency is bounded to `REDSEE_MAX_PARALLEL_SANDBOXES=2` (default) on purpose — killed
+  runs have leaked per-run iptables rules / networks before; 1 = fully serial (safest).
+- The themed Juice Shop (:3001, the `/` route behind the gateway) is FRAGILE under scanning —
+  it crashed twice during nuclei probes this session (root `/` → 502). Restart it:
+  `cd /root/juice-shop && NODE_CONFIG_ENV=redsees nohup node build/app.js >/tmp/redsees-juiceshop.log 2>&1 &`
+  Against Juice Shop the crawler surfaces 0 param-bearing endpoints, so injection is correctly
+  SKIPPED; use the `/market/*` sinks (search?q=, greeting?name=, notfound?path=) to exercise it.
 - This dev sandbox lacks `markdown`/`weasyprint` — red_report.py/blue_report.py + their tests
   fail to import here (pre-existing, unrelated).
 - Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming
   DVWA (:8080) or Juice Shop (:3000) is up.
 
-## Changed files (uncommitted — persistent scan store)
-- storage/scan_store.py (NEW) — `ScanStore` class (sqlite queue + worker pool + history) +
-  module-level `enqueue_scan`/`list_scans`/`get_scan` delegating to a lazy default store.
-- storage/__init__.py (NEW, empty) — makes storage/ a package.
-- tests/test_scan_store.py (NEW, 10 tests) — run_scan faked at the storage.scan_store boundary.
-- .gitignore — added `outputs/*.db*` so outputs/redsee.db is never committed.
-- schemas.py, modules/scan.py, app.py, integration.py, engine/*, docker/sandbox/* — UNTOUCHED
-  (verified: `git diff --stat schemas.py modules/scan.py app.py integration.py` empty).
-- Already committed earlier this session: the orchestrator (490180e), ffuf (70d964e, 8bdeac8).
+## Changed files (uncommitted — D-024)
+- engine/params.py (NEW) — injectable-param extraction + deterministic ranking; InjectionTarget.
+- modules/scan.py — ScanProfile modes (fast/standard/deep), direct-agent injection on
+  param-bearing targets, bounded concurrent stages, mode/caps in the record.
+- engine/agent.py, engine/xss_agent.py — backward-compatible `timeout_sec` param threaded through.
+- engine/nuclei_agent.py — memory-safe template dirs (`_DEFAULT_TEMPLATE_PATHS`), per-request
+  `-timeout/-retries/-c/-rl`, `default_tags`+`timeout_sec` on run_nuclei_agent; `_DEFAULT_TAGS`
+  now exposure,misconfig.
+- storage/scan_store.py — `mode` column (guarded ALTER) + `enqueue_scan(mode=)` -> worker -> run_scan.
+- app.py — `/api/scans` POST reads `mode`. templates/index.html + static/{script.js,style.css}
+  — Fast/Standard/Deep selector + mode pill/column.
+- tests/test_params.py (NEW, 14), tests/test_scan_modes.py (NEW, 14), tests/test_orchestrator.py
+  (mocks -> new agent boundary), tests/test_nuclei_agent.py (template-path assertion).
+- DECISIONS.md (D-024), PROGRESS.md, HANDOFF.md.
+- FROZEN, verified empty diff: `git diff --stat schemas.py engine/sandbox.py`.
+- Still uncommitted from the prior session too: the dashboard rework + store Flask wiring.
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first

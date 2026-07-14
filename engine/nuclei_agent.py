@@ -46,9 +46,43 @@ _SANDBOX_TIMEOUT_SEC = 300
 _MAX_NUCLEI_RUNS_PER_TARGET = 2
 
 # The bundled, offline template set baked into the sandbox image (see
-# docker/sandbox/Dockerfile). ALWAYS passed with -t so template resolution never
-# depends on nuclei's regenerated per-scan config.
+# docker/sandbox/Dockerfile).
 _TEMPLATES_DIR = "/opt/nuclei-templates"
+
+# Which template DIRECTORIES are actually loaded (each passed with its own -t).
+# This is a HARD memory bound, not a nicety: engine.sandbox caps every run at
+# 256 MB (frozen), and nuclei loads the templates it is pointed at INTO MEMORY
+# before scanning. Pointing -t at the whole corpus (thousands of templates, esp.
+# the ~4000 CVE templates) blows past 256 MB and the container is OOM-killed
+# (exit 137) a few seconds into loading — THAT is the "nuclei times out" failure.
+# Empirically verified against the BUILT image under `--memory 256m`:
+#   exposures+misconfiguration (~1163 templates) -> exit 0, fits;
+#   +technologies                                 -> exit 137 (OOM);
+#   +cve (~4000)                                  -> exit 137 (OOM).
+# So the default, memory-safe load is the two highest-signal HTTP categories
+# (exposed files/secrets + server misconfigurations). -tags below further scopes
+# WITHIN these dirs; it never widens the load.
+_DEFAULT_TEMPLATE_PATHS = (
+    "/opt/nuclei-templates/http/exposures",
+    "/opt/nuclei-templates/http/misconfiguration",
+)
+
+# Per-request execution bounds (all confirmed against `nuclei -h` in the BUILT
+# redsee-sandbox image, not guessed). These are what keep a template scan from
+# hanging on a slow/unresponsive target long enough to blow the sandbox
+# wall-clock: without a tight per-request -timeout and -retries=0, one slow
+# endpoint stalls the whole run. Verified live against redsees.com:3000 — the
+# scoped tech/exposure/misconfig/cve set completes in ~75s (vs ~116s untuned)
+# and never times out. Detection-only, harness-owned; the model supplies none.
+#   -timeout   seconds to wait per request before giving up (default nuclei 10)
+#   -retries   never re-issue a failed request (default nuclei 1)
+#   -c         templates executed in parallel (nuclei default 25)
+#   -rl        max requests/second, a politeness/wall-clock bound (default 150)
+_NUCLEI_REQUEST_TIMEOUT_SEC = "5"
+_NUCLEI_RETRIES = "0"
+_NUCLEI_CONCURRENCY = "15"        # lower than nuclei's default 25 — keeps the
+                                 # in-flight footprint comfortably under 256 MB
+_NUCLEI_RATE_LIMIT = "150"
 
 # Severity floor: exclude info-only templates by default — they are noise, not
 # findings. The model cannot widen this; the harness owns it.
@@ -67,9 +101,10 @@ _EXCLUDE_TAGS = ["dos", "intrusive", "fuzz", "fuzzing", "brute", "oob", "network
 #   -no-interactsh         disable interactsh/OAST — no out-of-band callbacks, ever
 _BASE_PROFILE = ["-jsonl", "-omit-raw", "-disable-update-check", "-no-interactsh"]
 
-# Default template tags when the model supplies none — a bounded, high-signal,
-# detection-only profile rather than the entire template corpus.
-_DEFAULT_TAGS = ["tech", "exposure", "misconfig"]
+# Default template tags when the model supplies none — aligned with the memory-safe
+# template DIRECTORIES loaded above (exposures + misconfiguration). Tags scope
+# WITHIN the loaded dirs; they can never widen the load past the 256 MB bound.
+_DEFAULT_TAGS = ["exposure", "misconfig"]
 
 # Safe tags the model may request. Default-deny: anything not here is dropped (a clean
 # unknown tag) or refused (a dangerous/flag-like one — see _sanitize_tags). Every tag
@@ -307,10 +342,15 @@ def _build_nuclei_argv(target: str, *, tags: list[str] | None = None,
     cookie, when present, is attached harness-side as a single Cookie header — never
     model-controlled.
     """
-    argv = ["nuclei", "-target", target, *_BASE_PROFILE,
-            "-t", _TEMPLATES_DIR,
-            "-severity", _SEVERITIES,
-            "-exclude-tags", ",".join(_EXCLUDE_TAGS)]
+    argv = ["nuclei", "-target", target, *_BASE_PROFILE]
+    for path in _DEFAULT_TEMPLATE_PATHS:       # one -t per dir; bounds what nuclei loads
+        argv += ["-t", path]
+    argv += ["-severity", _SEVERITIES,
+             "-exclude-tags", ",".join(_EXCLUDE_TAGS),
+             "-timeout", _NUCLEI_REQUEST_TIMEOUT_SEC,
+             "-retries", _NUCLEI_RETRIES,
+             "-c", _NUCLEI_CONCURRENCY,
+             "-rl", _NUCLEI_RATE_LIMIT]
     run_tags = tags if tags else _DEFAULT_TAGS
     if run_tags:
         argv += ["-tags", ",".join(run_tags)]
@@ -572,7 +612,9 @@ def _scan_transcript(target: str, tool_result: dict) -> dict:
 
 def run_nuclei_agent(targets: list, *, max_iterations: int = 6, scope_config=None,
                      llm_config=None, llm_client=None,
-                     auth_cookie: str | None = None) -> NucleiAgentResult:
+                     auth_cookie: str | None = None,
+                     default_tags: list | None = None,
+                     timeout_sec: int | None = None) -> NucleiAgentResult:
     """Drive the LLM to scan `targets` with nuclei via the sandboxed run_nuclei tool.
 
     The model picks targets (and optional focus tags); if it stops early or never emits a
@@ -581,12 +623,25 @@ def run_nuclei_agent(targets: list, *, max_iterations: int = 6, scope_config=Non
     is attached to every scan as a Cookie header — for authenticated targets like DVWA.
     Scanning is bounded: at most _MAX_NUCLEI_RUNS_PER_TARGET nuclei runs per target.
 
+    `default_tags` (optional) SCOPES the deterministic completion-pass template set for
+    the caller's scan mode (e.g. the orchestrator's standard profile passes
+    ["exposure", "misconfig", "tech", "cve"]); it is sanitized through the same safe
+    allowlist as any model-supplied tag and falls back to _DEFAULT_TAGS when None/empty.
+    `timeout_sec` (optional) is the per-scan sandbox wall-clock bound (default
+    _SANDBOX_TIMEOUT_SEC) — the outer limit on top of the per-request -timeout baked into
+    the argv.
+
     `targets` may be bare URL strings or Endpoint-like objects exposing `.url`. Fakes may
     be injected for tests via scope_config / llm_config / llm_client. "found" is derived
     SOLELY from parsed nuclei JSONL result lines.
     """
     if scope_config is None:
         scope_config = load_scope_config()
+
+    # Scope the completion-pass tags to the caller's mode (sanitized to the safe
+    # allowlist, exactly like a model-supplied tag); None/empty -> the default profile.
+    completion_tags = _sanitize_tags(default_tags) or None
+    scan_timeout = timeout_sec if timeout_sec is not None else _SANDBOX_TIMEOUT_SEC
 
     # ONE budget tracker for the whole run.
     if llm_client is None:
@@ -680,7 +735,8 @@ def run_nuclei_agent(targets: list, *, max_iterations: int = 6, scope_config=Non
                 # scan over one bad tool call. The completion pass still runs.
                 try:
                     tool_result, cands = _execute_run_nuclei(
-                        arguments, scope_config=scope_config, auth_cookie=auth_cookie)
+                        arguments, scope_config=scope_config, auth_cookie=auth_cookie,
+                        timeout_sec=scan_timeout)
                 except AssertionError as exc:
                     tool_result, cands = {
                         "ok": False,
@@ -737,7 +793,8 @@ def run_nuclei_agent(targets: list, *, max_iterations: int = 6, scope_config=Non
                 continue                              # already run with the default profile
 
             tool_result, cands = _run_one_scan(
-                url, tags=None, scope_config=scope_config, auth_cookie=auth_cookie)
+                url, tags=completion_tags, scope_config=scope_config,
+                auth_cookie=auth_cookie, timeout_sec=scan_timeout)
             tool_result["target"] = url
             transcript.append(_scan_transcript(url, tool_result))
             if cands:

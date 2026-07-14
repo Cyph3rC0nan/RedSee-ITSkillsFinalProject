@@ -569,3 +569,46 @@ above. (d) A real job queue (Celery/RQ/Redis) — rejected: new heavy deps for a
 demo/lab tool; a bounded daemon-thread pool over SQLite is sufficient and
 stdlib-only. NOT wired into Flask routes yet — that is the next task. Full detail
 in `HANDOFF.md` / `PROGRESS.md`'s 2026-07-13 entry.
+
+### D-024: Param-targeted injection + scan modes + nuclei is memory-scoped by template PATH (not just tags)
+
+**Status:** Accepted
+**Date:** 2026-07-14
+**Decision:** `run_scan` gained a `mode` (fast / standard / deep) and now (a) injects
+ONLY param-bearing endpoints, (b) runs independent tools concurrently, and (c) fixes
+the nuclei "timeout". Pieces:
+  * `engine/params.py` extracts injectable parameters (query-string keys + form/body
+    field names, minus control inputs like submit/CSRF) per crawled endpoint. A
+    param-less endpoint (e.g. a path-only `/api/Users/1`, a static page) is EXCLUDED
+    from sqli/xss — it can only ever waste sandbox time. Targets are ranked
+    deterministically (forms first, then links, then api/page; more params first; URL
+    tie-break) so a mode's endpoint cap is reproducible, never random.
+  * The orchestrator drives the engine agents DIRECTLY (`run_sqli_agent` /
+    `run_xss_agent` / `run_nuclei_agent`) with per-mode depth, because
+    `modules/sqli.py::scan_sqli`'s signature is frozen by a test (`(endpoints,
+    session)`) and cannot carry mode/depth. `timeout_sec` was threaded (backward-
+    compatibly) into the sqli/xss agents; `default_tags` + `timeout_sec` into nuclei.
+  * Independent stages run in a `ThreadPoolExecutor` bounded by
+    `REDSEE_MAX_PARALLEL_SANDBOXES` (default 2); ffuf still runs after httpx (chained
+    off its live URLs). tools_run is assembled in a FIXED order regardless of finish
+    order, so a deep scan's record stays stable.
+  * **nuclei is scoped by TEMPLATE DIRECTORY, not only by tag.** The real "timeout"
+    was an OOM: `engine.sandbox` caps every run at 256 MB (frozen), and `-t
+    /opt/nuclei-templates` loads the whole corpus (esp. ~4000 CVE templates) into
+    memory → the container is OOM-killed (exit 137) seconds into loading. Pointing
+    `-t` at two memory-safe HTTP category dirs (`exposures` + `misconfiguration`,
+    ~1163 templates) fits under 256 MB. Verified against the BUILT image under
+    `--memory 256m`: that set exits 0; adding `technologies` or `cve` -> exit 137.
+    A per-request `-timeout 5 -retries 0 -c 15 -rl 150` keeps a slow probe from
+    stalling the run. Live-proven THROUGH the real sandbox against redsees.com:3000:
+    `status=found, exit=0, timed_out=False, wall=67s` (was: OOM/timeout).
+**Why the memory framing matters:** the earlier "nuclei times out" symptom was
+misread as needing a bigger wall-clock bound; raising the bound never helps an
+OOM-kill. The fix had to REDUCE resident templates, and since `-tags` still LOADS
+the whole `-t` tree before filtering, only restricting the `-t` PATHS reduces memory.
+**Alternatives:** (a) raise the sandbox `--memory` — rejected: `engine/sandbox.py` is
+frozen (DoD requires an empty diff) and raising it is a hardening change. (b) thread
+per-mode `-severity` — kept `low..critical` globally; the path scope + tags already
+bound it. (c) mode-tune injection via `scan_sqli` kwargs — impossible (frozen
+signature), hence the direct-agent path. (d) higher parallelism — bounded at 2 given
+prior iptables-state collisions from killed runs.
