@@ -31,33 +31,53 @@ except ImportError:
 from schemas import Event
 
 
+# Default location of Wazuh's on-disk alert log (JSONL — one alert per line).
+WAZUH_ALERTS_DEFAULT_PATH = "/var/ossec/logs/alerts/alerts.json"
+
+
 # ═══════════════════════════════════════════════════════════════
 # PUBLIC API
 # ═══════════════════════════════════════════════════════════════
 
-def ingest_log_file(filepath: str) -> list[Event]:
+def ingest_log_file(filepath: str, last_n: int = None,
+                    since_minutes: int = None) -> list[Event]:
     """
-    Parse a SIEM log file (JSON) into normalized Event objects.
-    Auto-detects Wazuh vs Splunk format.
+    Parse a SIEM log file into normalized Event objects.
+    Auto-detects Wazuh vs Splunk format and handles BOTH a single JSON
+    document (array/object — the sample fixtures) AND JSON Lines (one JSON
+    object per line — what Wazuh actually writes to
+    /var/ossec/logs/alerts/alerts.json). Malformed JSONL lines are skipped.
 
     Args:
-        filepath: path to JSON log file
+        filepath: path to a JSON or JSONL log file
+        last_n: if set, keep only the most recent N records (the tail of the
+                file — Wazuh appends, so the newest alerts are last). Bounds a
+                huge alerts.json so it never overwhelms the UI. None = all.
+        since_minutes: if set, keep only records newer than N minutes ago
+                (best-effort — records whose timestamp can't be parsed are kept).
 
     Returns:
-        list[Event]
+        list[Event] (possibly empty; never raises on an empty/whitespace file)
 
     Raises:
         FileNotFoundError: if file doesn't exist
-        ValueError: if format is unrecognized
+        ValueError: if a non-empty file's format is unrecognized
     """
     path = Path(filepath)
     if not path.exists():
         raise FileNotFoundError(f"Log file not found: {filepath}")
 
-    with open(path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    records = _read_records(path)
 
-    return ingest_log_data(data)
+    if since_minutes is not None:
+        records = _filter_since(records, since_minutes)
+    if last_n is not None:
+        records = records[-last_n:] if last_n > 0 else []
+
+    if not records:
+        return []
+
+    return ingest_log_data(records)
 
 
 def ingest_log_data(raw_data: Union[dict, list]) -> list[Event]:
@@ -180,6 +200,104 @@ def fetch_wazuh_alerts(api_url=None, username=None, password=None,
 
 
 # ═══════════════════════════════════════════════════════════════
+# FILE READING (JSON document OR JSON Lines)
+# ═══════════════════════════════════════════════════════════════
+
+def _read_records(path: Path) -> list:
+    """
+    Read a log file into a flat list of raw record dicts, transparently
+    supporting three on-disk shapes:
+      * a JSON array           -> its elements
+      * a single JSON object   -> unwrapped (results/data/items/events/...) or [obj]
+      * JSON Lines (Wazuh)     -> one object per line, malformed lines skipped
+
+    Never raises on malformed content — returns [] for an empty/garbage file so
+    the caller can degrade to "0 events" rather than a 500.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    stripped = text.lstrip()
+    if not stripped:
+        return []
+
+    # Top-level JSON array (e.g. sample_wazuh_alerts.json / sample_splunk_export.json).
+    if stripped[0] == "[":
+        try:
+            data = json.loads(text)
+            return data if isinstance(data, list) else [data]
+        except json.JSONDecodeError:
+            pass  # fall through — maybe a truncated/odd file
+
+    # JSON Lines: if the first non-empty line parses as a complete JSON value,
+    # treat the whole file as JSONL and parse line-by-line (skipping bad lines).
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if lines:
+        try:
+            json.loads(lines[0])
+            records = []
+            for ln in lines:
+                try:
+                    records.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue  # skip a malformed line, keep going
+            return records
+        except json.JSONDecodeError:
+            pass  # not JSONL — probably a pretty-printed single document
+
+    # Fall back: whole-file JSON (a multi-line pretty-printed object/array).
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("results", "data", "affected_items", "items", "events", "alerts"):
+            val = data.get(key)
+            if isinstance(val, list):
+                return val
+        return [data]
+    return []
+
+
+def _record_timestamp(rec) -> "datetime | None":
+    """Best-effort parse of a raw record's timestamp (Wazuh/normalized use
+    `timestamp`, Splunk uses `_time`). Returns None if unparseable."""
+    if not isinstance(rec, dict):
+        return None
+    raw = rec.get("timestamp") or rec.get("_time") or rec.get("time")
+    if not isinstance(raw, str) or not raw:
+        return None
+    ts = raw.strip()
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _filter_since(records: list, minutes: int) -> list:
+    """Keep records newer than `minutes` ago. Records whose timestamp can't be
+    parsed are KEPT (fail-open) so a format quirk never silently hides alerts."""
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return records
+    if minutes <= 0:
+        return records
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    out = []
+    for rec in records:
+        dt = _record_timestamp(rec)
+        if dt is None or dt >= cutoff:
+            out.append(rec)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════
 # FORMAT DETECTION
 # ═══════════════════════════════════════════════════════════════
 
@@ -240,17 +358,97 @@ def _detect_format(data) -> str:
 # WAZUH PARSER
 # ═══════════════════════════════════════════════════════════════
 
+def severity_bucket(level: int) -> str:
+    """Map a Wazuh numeric rule level (1–15) to an exact schema severity string.
+    Buckets: >=12 Critical · 7–11 High · 4–6 Medium · <4 Low."""
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        level = 0
+    if level >= 12:
+        return "Critical"
+    if level >= 7:
+        return "High"
+    if level >= 4:
+        return "Medium"
+    return "Low"
+
+
+def is_web_attack(rule_id: str, groups=None) -> bool:
+    """Whether an alert is a web attack — Wazuh's `attack`/`web` groups, or a
+    rule id in the 31xxx web-accesslog range (31106 = the RedSee scan XSS hit)."""
+    groups = groups or []
+    if any(g in ("attack", "web") for g in groups):
+        return True
+    return str(rule_id).startswith("31")
+
+
+_REQ_RE = re.compile(
+    r'"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+(\S+)\s+HTTP', re.IGNORECASE)
+
+
+def _clean_ip(ip: str) -> str:
+    """Strip the IPv4-mapped-IPv6 `::ffff:` prefix Wazuh emits (e.g.
+    `::ffff:13.140.164.230` -> `13.140.164.230`)."""
+    ip = (ip or "").strip()
+    if ip.lower().startswith("::ffff:"):
+        ip = ip[7:]
+    return ip
+
+
+def _url_from_full_log(full_log: str) -> str:
+    """Pull the request target out of a raw access-log line."""
+    if not full_log:
+        return ""
+    m = _REQ_RE.search(full_log)
+    return m.group(1) if m else ""
+
+
+def _mitre_ids(rule: dict) -> list:
+    """Extract MITRE ATT&CK technique IDs from a Wazuh rule.mitre block."""
+    if not isinstance(rule, dict):
+        return []
+    mitre = rule.get("mitre", {})
+    if not isinstance(mitre, dict):
+        return []
+    ids = mitre.get("id", [])
+    if isinstance(ids, str):
+        ids = [ids]
+    return [str(i) for i in ids if i]
+
+
+def _compose_detail(payload: str, full_log: str, mitre_ids: list) -> str:
+    """Build the Event.raw_payload "detail" string. Carries the attack payload
+    (query string) or the raw access-log line, plus a parseable MITRE marker —
+    the frozen Event schema has no dedicated context/mitre field, so this free-
+    form field is where that evidence rides (blue_report parses `[MITRE: ...]`)."""
+    detail = payload or (full_log[:400] if full_log else "")
+    if mitre_ids:
+        marker = f"[MITRE: {', '.join(mitre_ids)}]"
+        detail = f"{detail} {marker}".strip() if detail else marker
+    return detail
+
+
 def _parse_wazuh_alerts(data) -> list[Event]:
     """
-    Parse Wazuh alert format into list[Event].
+    Parse Wazuh alert format into list[Event] — handles BOTH the real live
+    alerts.json shape and the older sample fixtures.
 
-    Expected Wazuh format:
+    Real Wazuh alert (one JSONL line):
     {
-        "timestamp": "2025-06-01T14:30:00Z",
-        "rule": {"id": "31103", "description": "...", "level": 12},
-        "agent": {"name": "web-server-01"},
-        "data": {"srcip": "192.168.1.100", "url": "/path"}
+        "timestamp": "2026-07-15T10:11:40.212+0200",
+        "rule": {"level": 6, "description": "...", "id": "31106",
+                 "mitre": {"id": ["T1190"], ...}, "groups": ["web","attack"]},
+        "agent": {"id": "000", "name": "..."},
+        "full_log": "::ffff:1.2.3.4 - - [...] \"GET /market/search?q=... HTTP/1.1\" 200 ...",
+        "data": {"protocol": "GET", "srcip": "::ffff:1.2.3.4", "url": "/market/search?q=..."}
     }
+
+    Field mapping onto the frozen Event schema:
+      rule.level -> severity_level · rule.description -> description ·
+      timestamp -> timestamp · rule.id -> rule_id · data.srcip -> src_ip
+      (::ffff: stripped) · data.url or the request from full_log -> target_url ·
+      query-string / full_log + rule.mitre -> raw_payload (detail).
     """
     items = data
     if isinstance(data, dict):
@@ -275,10 +473,14 @@ def _parse_wazuh_alerts(data) -> list[Event]:
                 rule_id = str(rule.get("id", "0"))
                 description = rule.get("description", "Unknown alert")
                 severity_level = int(rule.get("level", 1))
+                mitre_ids = _mitre_ids(rule)
             else:
                 rule_id = str(alert.get("rule.id", "0"))
                 description = alert.get("rule.description", "Unknown alert")
                 severity_level = int(alert.get("rule.level", 1))
+                mitre_ids = []
+
+            full_log = alert.get("full_log", "") or ""
 
             # source IP — check multiple possible locations
             data_field = alert.get("data", {})
@@ -300,9 +502,18 @@ def _parse_wazuh_alerts(data) -> list[Event]:
                 target_url = ""
                 raw_payload = ""
 
-            # If no payload from data, try to extract query string from URL
+            src_ip = _clean_ip(src_ip)
+
+            # Recover the target URL from the raw access-log line when data.url
+            # is absent (some web rules only populate full_log).
+            if not target_url and full_log:
+                target_url = _url_from_full_log(full_log)
+
+            # Attack payload: an explicit data.payload, else the URL's query string.
             if not raw_payload and target_url and "?" in target_url:
                 raw_payload = target_url.split("?", 1)[1]
+
+            raw_payload = _compose_detail(raw_payload, full_log, mitre_ids)
 
             events.append(Event(
                 source="Wazuh",

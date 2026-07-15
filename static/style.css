@@ -352,6 +352,13 @@ tbody tr:last-child td { border-bottom: none; }
 .dist-n { font-family: var(--mono); font-size: 12px; color: var(--ink); text-align: right; }
 .lvl-pill { font-family: var(--mono); font-size: 11px; font-weight: 600; width: 26px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; border: 1px solid; }
 
+/* ── Web-attack highlight (Wazuh rule 31xxx — RedSee scan traffic) ── */
+.web-badge { font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; color: #04191c; background: var(--cyan); border-radius: 2px; padding: 1px 4px; vertical-align: middle; }
+.events-table tr.web-attack { background: var(--cyan-glow); }
+.events-table tr.web-attack td { box-shadow: inset 2px 0 0 var(--cyan); }
+.events-table tr.web-attack:first-child td { box-shadow: inset 2px 0 0 var(--cyan); }
+.dist-web { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--ink-dim); display: flex; align-items: center; gap: 7px; }
+
 /* ── Status line (signature telemetry bar) ───────────────── */
 .statusline {
   grid-area: status;

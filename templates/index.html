@@ -201,11 +201,21 @@
               <button class="btn btn-cyan" id="uploadBtn">Analyze File</button>
             </div>
 
-            <div class="ingest-sep"><span>or pull live</span></div>
+            <div class="ingest-sep"><span>or read the SIEM directly</span></div>
 
             <div class="ingest-row">
               <label class="field wazuh-field">
-                <span class="field-label">Wazuh — last N minutes</span>
+                <span class="field-label">Wazuh alerts.json — last N alerts</span>
+                <input type="number" id="alertsLastN" value="300" min="1" max="5000" />
+              </label>
+              <button class="btn btn-cyan" id="alertsBtn">Load alerts.json</button>
+            </div>
+
+            <div class="ingest-sep"><span>or pull live API</span></div>
+
+            <div class="ingest-row">
+              <label class="field wazuh-field">
+                <span class="field-label">Wazuh API — last N minutes</span>
                 <input type="number" id="wazuhMinutes" value="30" min="1" max="1440" />
               </label>
               <button class="btn btn-cyan-ghost" id="wazuhBtn">Fetch Alerts</button>

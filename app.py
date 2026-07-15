@@ -34,7 +34,13 @@ from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_file, render_template, Response
 from flask_cors import CORS
 
-from log_ingestor import ingest_log_file, fetch_wazuh_alerts
+from log_ingestor import (
+    ingest_log_file, fetch_wazuh_alerts, WAZUH_ALERTS_DEFAULT_PATH,
+)
+
+# Default cap so a huge alerts.json (1000s of lines) never floods the UI in one
+# ingest; the operator can override per-request via `last_n`.
+_INGEST_DEFAULT_LAST_N = 500
 
 # Spine: persistent scan store (queue + status + history) over the unified
 # orchestrator (modules.scan.run_scan). The dashboard's RED OPS view drives
@@ -287,16 +293,34 @@ def generate_report(scan_id):
 @app.route("/analyze-logs", methods=["POST"])
 def analyze_logs():
     """
-    Accepts: multipart/form-data with 'file' OR JSON body with 'events'
+    Ingest SIEM logs into normalized Event dicts (the shape the Blue tab feed
+    expects). Three input modes:
+      * multipart/form-data with 'file'  → parse the uploaded log (JSON or JSONL)
+      * JSON body { "path": "..." }       → read a server-side log file; defaults
+                                            to Wazuh's alerts.json when omitted
+      * JSON body { "events": [...] }      → parse inline raw/normalized events
+
+    Optional (JSON body or form field): "last_n" (default 500 — bounds a huge
+    alerts.json), "minutes" (only alerts newer than N minutes).
+
     Returns: { "analysis_id": "xyz789", "event_count": 10, "events": [...] }
     """
     analysis_id = str(uuid.uuid4())[:8]
+
+    def _as_int(val, default=None):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
 
     try:
         if "file" in request.files:
             file = request.files["file"]
             if not file.filename:
                 return jsonify({"error": "Empty filename"}), 400
+
+            last_n = _as_int(request.form.get("last_n"), _INGEST_DEFAULT_LAST_N)
+            minutes = _as_int(request.form.get("minutes"), None)
 
             # Save to temp file with safe suffix
             suffix = Path(file.filename).suffix or ".json"
@@ -305,7 +329,7 @@ def analyze_logs():
             file.save(tmp_path)
 
             try:
-                events = ingest_log_file(tmp_path)
+                events = ingest_log_file(tmp_path, last_n=last_n, since_minutes=minutes)
                 events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
             finally:
                 try:
@@ -314,25 +338,39 @@ def analyze_logs():
                     pass
 
         elif request.is_json:
-            # Allow inline events JSON (already normalized or raw)
             payload = request.get_json() or {}
-            events_in = payload.get("events", [])
-            if not events_in:
-                return jsonify({"error": "No events data provided"}), 400
+            last_n = _as_int(payload.get("last_n"), _INGEST_DEFAULT_LAST_N)
+            minutes = _as_int(payload.get("minutes"), None)
+            events_in = payload.get("events")
 
-            # Save to temp file and re-ingest so the same parser handles both formats
-            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix=f"redsee_logs_{analysis_id}_")
-            os.close(tmp_fd)
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump(events_in, fh)
-            try:
-                events = ingest_log_file(tmp_path)
-                events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
-            finally:
+            if events_in:
+                # Inline events JSON (already normalized or raw). Save + re-ingest
+                # so the same parser handles both formats.
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix=f"redsee_logs_{analysis_id}_")
+                os.close(tmp_fd)
+                with open(tmp_path, "w", encoding="utf-8") as fh:
+                    json.dump(events_in, fh)
                 try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+                    events = ingest_log_file(tmp_path, last_n=last_n, since_minutes=minutes)
+                    events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+            else:
+                # Server-side path — defaults to the live Wazuh alerts.json (JSONL).
+                path = (payload.get("path") or WAZUH_ALERTS_DEFAULT_PATH).strip()
+                try:
+                    events = ingest_log_file(path, last_n=last_n, since_minutes=minutes)
+                except FileNotFoundError:
+                    return jsonify({"error": f"Log file not found on server: {path}",
+                                    "event_count": 0, "events": []}), 404
+                except PermissionError:
+                    return jsonify({"error": f"Permission denied reading {path} "
+                                    "(the console user needs read access to the Wazuh log).",
+                                    "event_count": 0, "events": []}), 403
+                events_dicts = [e.to_dict() if hasattr(e, "to_dict") else e for e in events]
         else:
             return jsonify({"error": "No file or JSON data provided"}), 400
 
@@ -395,7 +433,12 @@ def fetch_wazuh_alerts_route():
 def generate_blue_report_route():
     """
     Body:    { "analysis_id": "xyz789" } OR { "events": [...] }
-    Returns: { "report_url": "/downloads/blue_report_xyz789.pdf" }
+    Returns: { "report_url": "/downloads/blue_report_xyz789.<ext>", "format": "pdf"|"html" }
+
+    Uses blue_report.generate_deterministic_blue_report — evidence-derived, NOT
+    an LLM call — so this route needs neither weasyprint nor an LLM API key: it
+    renders a PDF when weasyprint is installed, else a self-contained HTML report.
+    The "Generate Blue Report" button therefore always produces a real file.
     """
     data = request.get_json() or {}
 
@@ -410,21 +453,21 @@ def generate_blue_report_route():
             return jsonify({"error": "No events data provided"}), 400
 
         try:
-            from blue_report import generate_blue_report   # lazy: needs weasyprint/markdown
+            from blue_report import generate_deterministic_blue_report  # lazy: only needs markdown
         except Exception as imp_err:                        # noqa: BLE001
-            return jsonify({"error": f"PDF generation is unavailable in this environment: {imp_err}"}), 503
+            return jsonify({"error": f"Blue report generation is unavailable: {imp_err}"}), 503
 
         try:
-            report_path = generate_blue_report(events, report_id=analysis_id)
+            report_path, fmt = generate_deterministic_blue_report(events, report_id=analysis_id)
         except Exception as gen_err:
-            return jsonify({"error": f"PDF generation failed: {gen_err}"}), 500
+            return jsonify({"error": f"Blue report generation failed: {gen_err}"}), 500
 
         filename = Path(report_path).name
 
         if analysis_id in blue_analyses:
             blue_analyses[analysis_id]["report_path"] = filename
 
-        return jsonify({"report_url": f"/downloads/{filename}"})
+        return jsonify({"report_url": f"/downloads/{filename}", "format": fmt})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

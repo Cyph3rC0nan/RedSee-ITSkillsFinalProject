@@ -11,19 +11,27 @@ Usage (import):
     pdf_path = generate_blue_report(events, report_id="incident001")
 """
 
+import re
 import json
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Reuse all LLM and PDF utilities from red_report — do NOT duplicate them
-from red_report import call_llm, load_prompt, markdown_to_pdf
+# Reuse all LLM and PDF utilities from red_report — do NOT duplicate them.
+# _render_report is the deterministic renderer (weasyprint PDF when present, else
+# self-contained HTML) shared with the red report; reusing it keeps blue_report
+# free of any direct weasyprint import so the deterministic path always works.
+from red_report import call_llm, load_prompt, markdown_to_pdf, _render_report
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).parent
 OUTPUTS_DIR = BASE_DIR / "outputs"
 OUTPUTS_DIR.mkdir(exist_ok=True)
+
+_MITRE_MARKER_RE = re.compile(r"\[MITRE:\s*([^\]]+)\]")
+_MITRE_ID_RE = re.compile(r"T\d{4}(?:\.\d{3})?")
 
 
 def _compute_severity_distribution(events: list[dict]) -> str:
@@ -100,6 +108,181 @@ Generate the full blue team report now. Include specific Wazuh XML and Splunk SP
     markdown_to_pdf(full_md, "blue.css", output_path)
     print(f"[BlueReport] PDF saved: {output_path}")
     return output_path
+
+
+# ── Deterministic blue report (no LLM, weasyprint OPTIONAL) ──────────────────
+# generate_blue_report() above ALWAYS needs a working LLM call + weasyprint — a
+# two-part dependency that fails closed the moment either is unavailable. The
+# generator below builds the SAME kind of incident report directly from the
+# ingested Events (deterministic string templates, not an LLM), rendered via
+# red_report._render_report (weasyprint PDF when importable, else self-contained
+# HTML — needs only the already-installed `markdown` pkg). This is the path
+# app.py's /generate-blue-report route calls: the "Generate Blue Report" button
+# must ALWAYS produce a real, downloadable file, never a dead click.
+
+def _sev_bucket(level) -> str:
+    """Wazuh numeric level -> exact schema severity string (mirror of
+    log_ingestor.severity_bucket, kept local so this module has no import cycle)."""
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        level = 0
+    if level >= 12:
+        return "Critical"
+    if level >= 7:
+        return "High"
+    if level >= 4:
+        return "Medium"
+    return "Low"
+
+
+def _is_web_attack(e: dict) -> bool:
+    return str(e.get("rule_id", "")).startswith("31")
+
+
+def _fmt_ts(iso) -> str:
+    if not iso:
+        return "—"
+    m = re.search(r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})", str(iso))
+    return f"{m.group(1)} {m.group(2)}" if m else str(iso)
+
+
+def _mitre_from_event(e: dict) -> list:
+    """Recover MITRE technique IDs the ingestor packed into raw_payload's
+    `[MITRE: ...]` marker (the frozen Event schema has no dedicated field)."""
+    marker = _MITRE_MARKER_RE.search(e.get("raw_payload", "") or "")
+    if not marker:
+        return []
+    return _MITRE_ID_RE.findall(marker.group(1))
+
+
+def _severity_table(events: list) -> str:
+    counts = Counter(_sev_bucket(e.get("severity_level", 0)) for e in events)
+    rows = ["| Severity | Events |", "|---|---|"]
+    for sev in ("Critical", "High", "Medium", "Low"):
+        rows.append(f"| {sev} | {counts.get(sev, 0)} |")
+    return "\n".join(rows) + "\n"
+
+
+def _mitre_section(events: list) -> str:
+    counts = Counter()
+    for e in events:
+        for tid in _mitre_from_event(e):
+            counts[tid] += 1
+    if not counts:
+        return "_No MITRE ATT&CK techniques recorded on these events._\n"
+    rows = ["| Technique | Events |", "|---|---|"]
+    for tid, n in counts.most_common():
+        rows.append(f"| {tid} | {n} |")
+    return "\n".join(rows) + "\n"
+
+
+def _top_source_ips(events: list, limit: int = 10) -> str:
+    counts = Counter(e.get("src_ip", "") for e in events if e.get("src_ip"))
+    if not counts:
+        return "_No source IPs recorded on these events._\n"
+    rows = ["| Source IP | Events |", "|---|---|"]
+    for ip, n in counts.most_common(limit):
+        rows.append(f"| {ip} | {n} |")
+    return "\n".join(rows) + "\n"
+
+
+def _events_table(events: list, limit: int = 100) -> str:
+    if not events:
+        return "_No events ingested._\n"
+    rows = ["| Lvl | Sev | Time | Rule | Description | Source IP | Target |",
+            "|---|---|---|---|---|---|---|"]
+    for e in events[:limit]:
+        lvl = e.get("severity_level", 0)
+        sev = _sev_bucket(lvl)
+        flag = " ⚠" if _is_web_attack(e) else ""
+        desc = str(e.get("description", "")).replace("|", "\\|")
+        url = str(e.get("target_url", "")).replace("|", "\\|")
+        rows.append(
+            f"| {lvl} | {sev} | {_fmt_ts(e.get('timestamp'))} | "
+            f"{e.get('rule_id', '?')}{flag} | {desc} | {e.get('src_ip', '')} | {url} |")
+    extra = f"\n\n_Showing {min(limit, len(events))} of {len(events)} events._" if len(events) > limit else ""
+    return "\n".join(rows) + "\n" + extra
+
+
+def _build_deterministic_blue_markdown(events: list, report_id: str) -> str:
+    total = len(events)
+    sources = sorted(set(e.get("source", "Unknown") for e in events)) or ["—"]
+    counts = Counter(_sev_bucket(e.get("severity_level", 0)) for e in events)
+    web_attacks = [e for e in events if _is_web_attack(e)]
+    times = sorted(e.get("timestamp", "") for e in events if e.get("timestamp"))
+    t_start = _fmt_ts(times[0]) if times else "—"
+    t_end = _fmt_ts(times[-1]) if times else "—"
+
+    cover = f"""# RedSee — Blue Team Incident Report
+
+**Report ID:** {report_id}
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Tool:** RedSee SIEM Analyzer (deterministic report — no LLM narrative)
+**Total Events Analyzed:** {total}
+**SIEM Sources:** {', '.join(sources)}
+**Time Range:** {t_start} → {t_end}
+**Critical:** {counts.get('Critical', 0)}  **High:** {counts.get('High', 0)}  **Medium:** {counts.get('Medium', 0)}  **Low:** {counts.get('Low', 0)}
+
+---
+
+## Incident Summary
+
+"""
+    if total:
+        cover += (
+            f"This report normalizes **{total}** SIEM event"
+            f"{'' if total == 1 else 's'} from {', '.join(sources)}. "
+            f"**{len(web_attacks)}** {'is a' if len(web_attacks) == 1 else 'are'} "
+            f"web-attack alert{'' if len(web_attacks) == 1 else 's'} "
+            f"(access-log rule 31xxx / `attack` group) — the class of alert "
+            f"RedSee's own active scans generate against the target. Every event "
+            f"below is a defender-side observation from the SIEM, not an inference.\n"
+        )
+    else:
+        cover += "No events were ingested for this window — nothing to report.\n"
+
+    body = f"""
+## Events by Severity
+
+{_severity_table(events)}
+
+## MITRE ATT&CK Techniques Seen
+
+{_mitre_section(events)}
+
+## Top Source IPs
+
+{_top_source_ips(events)}
+
+## Web-Attack Alerts
+
+{_events_table(web_attacks) if web_attacks else "_No web-attack alerts in this set._"}
+
+## All Normalized Events
+
+{_events_table(events)}
+
+---
+
+*Generated by RedSee. Every row is a normalized SIEM observation — no finding or
+severity here is fabricated by a model. Defensive analysis only.*
+"""
+    return cover + body
+
+
+def generate_deterministic_blue_report(events: list, report_id: str = None) -> tuple:
+    """Build and render a deterministic (LLM-free) blue incident report from the
+    ingested Event dicts. Returns (output_path, "pdf"|"html"). Never raises for
+    "0 events" — an empty window still gets a real, downloadable report."""
+    if not report_id:
+        report_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    events = events or []
+    md = _build_deterministic_blue_markdown(events, report_id)
+    output_stem = str(OUTPUTS_DIR / f"blue_report_{report_id}")
+    path, fmt = _render_report(md, "blue.css", output_stem)
+    print(f"[BlueReport] deterministic report saved: {path} (format={fmt})")
+    return path, fmt
 
 
 # ── CLI Test ───────────────────────────────────────────
