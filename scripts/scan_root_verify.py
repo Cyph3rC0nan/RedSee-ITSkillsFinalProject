@@ -48,8 +48,11 @@ def main() -> None:
         )
     }))
 
+    # Full, UNTRUNCATED detail — a truncated error message is worse than useless
+    # when diagnosing a sandbox/Docker-networking failure (the real cause is
+    # often the tail end of the message).
     for tr in rec["tools_run"]:
-        print(f"  {tr['name']:<7} {tr['status']:<8} count={tr['count']:<3} {tr['detail'][:65]}")
+        print(f"  {tr['name']:<7} {tr['status']:<8} count={tr['count']:<3} {tr['detail']}")
 
     summary = rec["summary"]
     print("findings_total:", summary["findings_total"], summary["findings_by_severity"])
@@ -58,9 +61,11 @@ def main() -> None:
 
     print("\n--- injection candidates tested (incl. clean/error, for diagnosis) ---")
     for c in rec["injection_candidates"]["sqli"]:
-        print("  SQLI:", c["status"], c["url"], "param=%s" % c["parameter"], c.get("technique"))
+        print("  SQLI:", c["status"], c["url"], "param=%s" % c["parameter"],
+              c.get("technique"), "error=%s" % c.get("error"))
     for c in rec["injection_candidates"]["xss"]:
-        print("  XSS: ", c["status"], c["url"], "param=%s" % c["parameter"], c.get("context"))
+        print("  XSS: ", c["status"], c["url"], "param=%s" % c["parameter"],
+              c.get("context"), "error=%s" % c.get("error"))
 
 
 if __name__ == "__main__":
