@@ -179,7 +179,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .field { display: block; margin-bottom: 16px; }
 .field-label { display: block; font-family: var(--mono); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 7px; }
-.field input[type="text"], .field input[type="number"], .field input[type="file"] {
+.field input[type="text"], .field input[type="number"], .field input[type="password"], .field input[type="file"] {
   width: 100%; background: var(--bg-2); border: 1px solid var(--line-hi);
   border-radius: var(--radius); color: var(--ink);
   font-family: var(--mono); font-size: 13px; padding: 11px 12px;
@@ -187,6 +187,23 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 .field input::placeholder { color: var(--ink-faint2); }
 .field input:focus { outline: none; border-color: var(--red); box-shadow: 0 0 0 3px var(--red-glow); }
+
+/* Native "Choose File" button — themed to match the console rather than the
+   browser's default OS-chrome button (both WebKit/Blink and Firefox forms). */
+.field input[type="file"] { padding: 8px; cursor: pointer; }
+.field input[type="file"]::file-selector-button,
+.field input[type="file"]::-webkit-file-upload-button {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  color: var(--cyan); background: var(--cyan-glow); border: 1px solid rgba(47, 212, 230, 0.4);
+  border-radius: 3px; padding: 8px 14px; margin-right: 12px; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.field input[type="file"]:hover::file-selector-button,
+.field input[type="file"]:hover::-webkit-file-upload-button {
+  background: rgba(47, 212, 230, 0.22); border-color: var(--cyan);
+}
+.field input[type="file"]:active::file-selector-button,
+.field input[type="file"]:active::-webkit-file-upload-button { background: rgba(47, 212, 230, 0.3); }
 
 .attest { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; color: var(--ink-dim); line-height: 1.5; margin-bottom: 16px; cursor: pointer; }
 .attest input { margin-top: 2px; width: 15px; height: 15px; accent-color: var(--red); flex: none; }
