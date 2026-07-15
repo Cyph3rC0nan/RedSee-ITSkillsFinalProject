@@ -330,6 +330,21 @@ function initBlue() {
     finally { btn.disabled = false; }
   });
 
+  $("#alertsBtn").addEventListener("click", async () => {
+    const lastN = parseInt($("#alertsLastN").value, 10) || 300;
+    const btn = $("#alertsBtn"); btn.disabled = true;
+    note("ingestNote", `Reading the last ${lastN} Wazuh alerts…`, "info");
+    try {
+      const data = await api("/analyze-logs", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ last_n: lastN }),
+      });
+      onEvents(data);
+      note("ingestNote", `Normalized ${data.event_count} Wazuh alert${data.event_count === 1 ? "" : "s"} from alerts.json.`, "ok");
+    } catch (e) { note("ingestNote", e.message || "Could not read alerts.json on the server.", "err"); }
+    finally { btn.disabled = false; }
+  });
+
   $("#wazuhBtn").addEventListener("click", async () => {
     const minutes = parseInt($("#wazuhMinutes").value, 10) || 30;
     const btn = $("#wazuhBtn"); btn.disabled = true;
@@ -370,6 +385,9 @@ function onEvents(data) {
   updateStatusline();
 }
 function lvlClass(n) { return n >= 12 ? "Critical" : n >= 8 ? "High" : n >= 4 ? "Medium" : "Low"; }
+// Web-attack alerts (Wazuh access-log rule 31xxx) — the class RedSee's own scans
+// trigger; highlighted so scan-generated alerts stand out in the feed.
+function isWebAttack(e) { return String(e.rule_id || "").startsWith("31"); }
 function renderEvents() {
   const body = $("#eventsBody");
   const ev = state.blue.events;
@@ -380,10 +398,12 @@ function renderEvents() {
   }
   body.innerHTML = ev.map((e) => {
     const sev = lvlClass(e.severity_level || 0);
-    return `<tr>
+    const web = isWebAttack(e);
+    const badge = web ? ` <span class="web-badge" title="web-attack alert (rule 31xxx) — matches RedSee scan traffic">WEB</span>` : "";
+    return `<tr class="${web ? "web-attack" : ""}">
       <td><span class="lvl-pill sev-${sev}" title="severity level ${esc(e.severity_level)}">${esc(e.severity_level)}</span></td>
       <td class="cell-time">${fmtTime(e.timestamp)}</td>
-      <td class="mono dim">${esc(e.rule_id)}</td>
+      <td class="mono dim">${esc(e.rule_id)}${badge}</td>
       <td class="cell-evidence" title="${esc(e.description)}">${esc(e.description)}</td>
       <td class="mono">${esc(e.src_ip)}</td>
       <td class="cell-loc" title="${esc(e.target_url)}">${esc(e.target_url)}</td>
@@ -397,12 +417,14 @@ function renderDist() {
   const box = $("#distBody");
   if (!state.blue.events.length) { box.innerHTML = `<p class="empty-note">No events ingested yet.</p>`; return; }
   const color = { Critical: "var(--crit)", High: "var(--high)", Medium: "var(--med)", Low: "var(--low)" };
+  const webCount = state.blue.events.filter(isWebAttack).length;
   box.innerHTML = SEV_ORDER.map((k) => `
     <div class="dist-row">
       <span class="dist-k">${k}</span>
       <div class="dist-track"><div class="dist-fill" style="width:${(buckets[k] / max) * 100}%;background:${color[k]}"></div></div>
       <span class="dist-n">${buckets[k]}</span>
-    </div>`).join("");
+    </div>`).join("") +
+    `<div class="dist-web"><span class="web-badge">WEB</span> ${webCount} web-attack alert${webCount === 1 ? "" : "s"} (rule 31xxx)</div>`;
 }
 
 /* ── Status line telemetry ─────────────────────────────── */

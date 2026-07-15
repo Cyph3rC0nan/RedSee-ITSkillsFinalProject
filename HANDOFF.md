@@ -1,24 +1,40 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-14T14:50:00Z
-**Current milestone:** skip legibility (D-025 territory, not yet numbered/committed) + Red
-Report export fix — deterministic (no-LLM) report generator, always produces a real file.
-UNCOMMITTED. Live-deployed (service restarted) and proven against the real console.
+**Last updated:** 2026-07-15T11:35:00Z
+**Current milestone:** Blue Ops wired to REAL Wazuh alerts.json (JSONL) — ingest → events
+feed + threat levels → deterministic (no-LLM) blue incident report. UNCOMMITTED. Live-
+deployed (service restarted, port 80) and proven end-to-end against the real console.
 
 ## Next step
-Diagnose-and-fix task is COMPLETE and live-proven — commit it (see "Changed files" below).
-Flag to the user before/at commit time: `outputs/*.html` is NOT in `.gitignore` (only
-`.pdf`/`.json`/`.sarif`/`.db*` are) — the new deterministic report's HTML fallback output
-would get swept up by a `git add -A`; add an `outputs/*.html` line before committing, or
-`git add` the specific source files rather than the whole `outputs/` tree. Two proof
-artifacts already sitting there uncommitted: `outputs/red_report_7a4b9a45.html`,
-`outputs/red_report_90bc384c.html` — fine to leave or delete, not deliverables. After that:
-idor/auth agents (the last two static modules to convert to the agent-driven pattern).
+Blue Ops / Wazuh-ingest task is COMPLETE and live-proven — commit it (see "Changed files").
+`.gitignore` already covers `outputs/*.html` (the earlier gap is closed), so `git add -A` is
+safe now w.r.t. report artifacts. After that: idor/auth agents (the last two static modules
+to convert to the agent-driven pattern).
 
 ## In progress
 nothing
 
 ## Recently completed (last 5)
+- Wazuh alerts.json → Blue Ops (ingest + feed + threat levels + deterministic blue report).
+  log_ingestor.py: `ingest_log_file(filepath, last_n=None, since_minutes=None)` — NEW
+  `_read_records()` handles JSONL (Wazuh's real shape, one alert/line, malformed lines
+  skipped) AND the old JSON-array/object fixtures; `last_n` tails the file (newest last),
+  `since_minutes` best-effort time-window. Enriched `_parse_wazuh_alerts`: rule.level→
+  severity_level (raw int), rule.description→description, data.srcip→src_ip (`::ffff:`
+  stripped), data.url OR request parsed from full_log→target_url, query-string/full_log +
+  `[MITRE: T…]` marker→raw_payload (frozen Event has no context field, so MITRE rides in the
+  free-form detail field). NEW helpers `severity_bucket()` (≥12 Crit/7–11 High/4–6 Med/<4
+  Low), `is_web_attack()` (31xxx or attack/web group). app.py `/analyze-logs`: accepts a
+  server-side `path` (default `/var/ossec/logs/alerts/alerts.json`) + `last_n`(500 default)/
+  `minutes`, OR an upload, OR inline events; `/generate-blue-report` now calls the
+  deterministic generator (always downloads a file). blue_report.py: NEW
+  `generate_deterministic_blue_report(events)` (incident summary, events-by-severity, MITRE
+  seen, top source IPs, web-attack section, all-events table) → reuses red_report._render_
+  report (weasyprint PDF if present, else self-contained HTML; no LLM). Frontend: "Load
+  alerts.json" button + web-attack row highlight (rule 31xxx) + WEB badge. 22 new offline
+  tests (real captured alert lines); schemas.py/engine untouched. LIVE proven: /analyze-logs
+  → 300 events, 10 web-attack, the /rest/products/search?q=<script>alert(1)</script> XSS
+  (rule 31106) present; blue report downloads a real 23KB file listing it — 2026-07-15
 - Skip legibility + Red Report export fix. DIAGNOSIS (confirmed against a real record,
   `outputs/scan_0975e0a2.json`, before changing anything): sqli/xss "skipped" on a 502'd
   target was CORRECT D-024 behavior (0 param-bearing endpoints -> nothing to inject), not a
@@ -39,28 +55,26 @@ nothing
   6 real XSS + a real downloadable report; 0-finding scan -> real report, not 400; unknown id
   -> clear 404). 11 new offline tests; schemas.py/engine/sandbox.py untouched — 2026-07-14
 - Param-targeted injection + scan modes + nuclei OOM fix (D-024, COMMITTED+PUSHED as 0b28c9e).
-  NEW `engine/params.py` extracts injectable params, ranks targets (forms>links>api), caps
-  per mode. `run_scan(mode=fast|standard|deep)` drives the engine agents DIRECTLY (scan_sqli's
-  sig is frozen) with per-mode depth/timeout. Independent tools run concurrently
-  (ThreadPoolExecutor, `REDSEE_MAX_PARALLEL_SANDBOXES`, default 2). **nuclei "timeout" was a
-  256 MB sandbox OOM** loading the full template corpus — fixed by scoping `-t` to
-  memory-safe dirs (exposures+misconfiguration). mode threaded store->app->UI. Full detail:
-  DECISIONS.md D-024 — 2026-07-14
-- Built `storage/scan_store.py` (COMMITTED) — SQLite queue/status/history over run_scan;
-  `enqueue_scan` gates up front, bounded worker pool, orphaned `running` rows reconcile to
-  `error` on restart. DB holds a summary + a path to scan_<id>.json, never the full record.
-  See DECISIONS.md D-023 — 2026-07-13
-- Built `modules/scan.py` (COMMITTED) — the unified scan orchestrator: crawl -> sqli/xss ->
-  recon -> ONE `scan_<id>.json` alongside the existing per-tool outputs, all sharing one
-  scan_id. Every stage wrapped so a failure is an "error" tools_run entry, never fabricated.
-  See DECISIONS.md D-022 — 2026-07-13
+  `engine/params.py` ranks/caps injectable targets; `run_scan(mode=fast|standard|deep)` drives
+  agents directly with per-mode depth; independent tools run concurrently. **nuclei "timeout"
+  was a 256 MB sandbox OOM** — fixed by scoping `-t` to memory-safe dirs. DECISIONS.md D-024.
+- Built `storage/scan_store.py` (COMMITTED) — SQLite queue/status/history over run_scan; gates
+  up front, bounded worker pool, orphaned rows reconcile to `error`. DECISIONS.md D-023 — 07-13
 
 ## Key decisions
+- Blue: MITRE has no home in the frozen 8-field Event, so it rides in `raw_payload` as a
+  parseable `[MITRE: T1190]` marker appended after the attack payload/full_log. blue_report
+  regexes it back out for the "MITRE techniques seen" section. Web-attack highlight keys off
+  rule_id 31xxx (derivable from Event.rule_id — `groups` isn't a schema field).
+- Blue report reuses `red_report._render_report` (not its own weasyprint import) so the
+  deterministic PDF/HTML fallback path is shared. `/generate-blue-report` now calls the
+  deterministic generator; old LLM `generate_blue_report` left as an optional path, not deleted.
+- `/analyze-logs` reads a server-side `path` (default Wazuh alerts.json) with a `last_n`=500
+  cap so a 1000s-line JSONL never floods the UI; JSONL detection is "first non-empty line
+  parses as JSON → parse line-by-line, skip malformed", with JSON-array/object fallbacks.
 - Report route calls a NEW deterministic generator, not "fix weasyprint + keep the LLM path
-  primary": even with weasyprint installed (system pango/cairo ARE present), the LLM call
-  would still fail (`OPENROUTER_API_KEY` empty). A report button must not depend on a paid
-  API key/network/model. Old `generate_red_report` (LLM prose) is left as an optional future
-  path, not deleted.
+  primary": even with weasyprint installed the LLM call would still fail (`OPENROUTER_API_KEY`
+  empty). A report button must not depend on a paid API key/network/model.
 - Skip reasons are computed from data ALREADY collected in the same scan (crawl count +
   httpx reachability) — zero new calls. The skip CONDITION in modules/scan.py is
   byte-identical to before; only the `detail` string changed (tools_run isn't in schemas.py).
@@ -81,8 +95,12 @@ nothing
 - `OPENROUTER_API_KEY` is empty, `LLM_PROVIDER` unset (defaults openrouter) — the OLD
   LLM-authored report path fails regardless of weasyprint. Ollama IS reachable (`:11434`) if
   a future session wants a free LLM-authored path (`LLM_PROVIDER=ollama`).
-- GAP: `outputs/*.html` is NOT in `.gitignore` (only `.pdf`/`.json`/`.sarif`/`.db*` are) — the
-  new HTML report fallback would get swept by `git add -A`. Add before/at next commit.
+- `outputs/*.html` IS now in `.gitignore` (the earlier gap is closed) — report HTML fallbacks
+  won't be swept by `git add -A`.
+- The console runs as ROOT on port 80 (not 5000) via `redsee-console` gunicorn; root can read
+  the 640 `wazuh:wazuh` alerts.json. Basic auth is ON — creds in `.env`
+  (`REDSEE_DASH_USER`/`REDSEE_DASH_PASS`). If the console ever runs as non-root, add it to the
+  `wazuh` group or it'll get 403 on `/analyze-logs` (route already returns a clear 403/404).
 - nuclei's `-t` paths are memory-bounded (D-024) — if widened, re-verify under
   `docker run --memory 256m` first; `technologies`/`cve` OOM.
 - Concurrency bounded to `REDSEE_MAX_PARALLEL_SANDBOXES=2` on purpose. Even a CLEAN (non-
@@ -100,24 +118,28 @@ nothing
 - Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming a
   target is up.
 
-## Changed files (uncommitted — skip legibility + report fix)
-- modules/scan.py — httpx/tlsx classified before sqli/xss (reorder only); 3-way skip reason
-  for sqli/xss's `tools_run[].detail` (skip CONDITION untouched).
-- red_report.py — graceful `weasyprint` import (`_HAS_WEASYPRINT`); NEW
-  `generate_deterministic_report()` / `_build_deterministic_markdown()` / `_render_report()`
-  / `_tools_table()` / `_recon_summary()` / `_finding_section()` / `_fmt_ts()`. OLD
-  `generate_red_report`/`markdown_to_pdf`/`call_llm` UNTOUCHED.
-- app.py — `/scan/<id>/report` rewritten: prefers `scan_<id>.json` over legacy
-  `findings_<id>.json`, calls the deterministic generator, 404 (not 400) only when there's
-  truly no scan data, returns `{"report_url","format"}`.
-- static/script.js — `renderTools()` shows `.detail` as a visible sub-line for skipped/error
-  chips; report button visible whenever `status==="done"`; `downloadRedReport()` surfaces the
-  real server error via a new `#reportNote`.
-- templates/index.html — added `#reportNote`. static/style.css — `.treason` sub-line style.
-- tests/test_red_report_deterministic.py (NEW, 11 tests — exercises both pdf/html render
-  branches via a stubbed weasyprint, so it's environment-independent).
+## Changed files (this session — Wazuh alerts.json → Blue Ops; UNCOMMITTED)
+- log_ingestor.py — `ingest_log_file(filepath, last_n=None, since_minutes=None)`; NEW
+  `_read_records()` (JSONL + JSON-array/object), `_record_timestamp()`/`_filter_since()`,
+  `severity_bucket()`, `is_web_attack()`, `_clean_ip()`, `_url_from_full_log()`,
+  `_mitre_ids()`, `_compose_detail()`; `_parse_wazuh_alerts` enriched (full_log/mitre/IP).
+  `WAZUH_ALERTS_DEFAULT_PATH` const. Backward-compatible: old sample fixtures still parse.
+- blue_report.py — NEW `generate_deterministic_blue_report()` + section builders
+  (`_severity_table`/`_mitre_section`/`_top_source_ips`/`_events_table`/…); imports
+  `_render_report` from red_report. OLD LLM `generate_blue_report` UNTOUCHED.
+- app.py — `/analyze-logs` accepts server-side `path`(default Wazuh alerts.json)+`last_n`/
+  `minutes` OR upload OR inline events; `/generate-blue-report` → deterministic generator,
+  returns `{"report_url","format"}`. NEW `_INGEST_DEFAULT_LAST_N=500`.
+- templates/index.html — "Load alerts.json" ingest row (`#alertsBtn`/`#alertsLastN`).
+- static/script.js — `#alertsBtn` handler; `isWebAttack()`; web-attack row highlight + WEB
+  badge in `renderEvents`/`renderDist`.
+- static/style.css — `.web-badge`/`.events-table tr.web-attack`/`.dist-web`.
+- tests/test_blue_ingest.py (NEW, 22 tests) + tests/fixtures/wazuh_alerts_sample.jsonl (NEW,
+  real captured alert lines + a malformed line).
 - FROZEN, verified empty diff: `git diff --stat schemas.py engine/sandbox.py`.
-- D-024 (prior session) is committed/pushed (0b28c9e, 268f7ed) — not part of this diff.
+- Prior UNCOMMITTED work (skip legibility + red report fix: modules/scan.py, red_report.py,
+  app.py /scan report route, script.js, index.html, style.css, test_red_report_deterministic.py)
+  is ALSO still uncommitted — commit alongside or separately.
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first

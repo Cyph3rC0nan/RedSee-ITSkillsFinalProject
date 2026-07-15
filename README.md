@@ -1,154 +1,216 @@
 # RedSee
 
-> **Dual-mode automated pentesting tool.** One scan, two reports: attacker's perspective and defender's perspective, both generated from real findings and live SIEM alerts.
+> **An authorized-only, agentic web-app pentesting platform with dual Red/Blue reporting.** A sandboxed, LLM-driven agent engine drives real security tools (sqlmap, Dalfox, nuclei, httpx, tlsx, ffuf) against one authorized target, aggregates everything into one unified scan record, and turns it into both an attacker's report and a defender's report — from the same evidence.
 
-RedSee crawls a target web application, runs four vulnerability scanners (SQL injection, XSS, IDOR, broken authentication), feeds the same activity to a Wazuh/Splunk SIEM, and produces two professional PDF reports through an LLM:
-
-- **Red Team Report** — CVSS-scored findings, proof-of-concept, exploitation steps, remediation
-- **Blue Team Report** — attack timeline, missed detections, copy-paste-ready Wazuh/Splunk rules
+RedSee started as a static four-scanner pipeline and has since grown into an **agent-driven security engine**: a plan → act → observe loop drives real, sandboxed tools instead of hard-coded payload lists, every action is gated by an explicit authorization + scope check, every "found" verdict is derived solely from parsed tool output (never an LLM's say-so), and the whole thing runs behind a persistent scan queue and a dark-themed operations console.
 
 ---
 
 ## Table of Contents
 
-- [Features](#features)
+- [What it does](#what-it-does)
+- [Key capabilities](#key-capabilities)
 - [Architecture](#architecture)
-- [Project Layout](#project-layout)
+- [Security model](#security-model)
+- [Scan modes](#scan-modes)
+- [Project layout](#project-layout)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-  - [Full Pipeline (Recommended)](#full-pipeline-recommended)
-  - [Standalone Scanner](#standalone-scanner)
-  - [Crawler Only](#crawler-only)
-  - [Log Ingestor Only](#log-ingestor-only)
-  - [Report Engines Only](#report-engines-only)
-  - [Flask Web UI](#flask-web-ui)
-- [Vulnerability Modules](#vulnerability-modules)
-- [Output Files](#output-files)
-- [Demo Mode (Offline)](#demo-mode-offline)
+- [Quick start](#quick-start)
+- [Dashboard / API routes](#dashboard--api-routes)
+- [Blue team / SIEM ingestion](#blue-team--siem-ingestion)
+- [Reports](#reports)
+- [Demo target](#demo-target)
 - [Testing](#testing)
-- [Project Constraints](#project-constraints)
-- [Tech Stack](#tech-stack)
+- [Known limitations](#known-limitations)
+- [Tech stack](#tech-stack)
 - [License](#license)
 
 ---
 
-## Features
+## What it does
 
-- **BFS web crawler** discovers pages, forms, and API endpoints (depth 5, max 100 pages)
-- **Four scanner modules** with their own detection techniques:
-  - `SQLi` — error-based, time-based blind, boolean-based blind, UNION-based
-  - `XSS` — reflected, stored, DOM-based
-  - `IDOR` — object-level authorization checks
-  - `BrokenAuth` — default credentials, weak session handling
-- **Dual-mode reports** generated via LLM (OpenRouter / DeepSeek / Claude / Ollama)
-- **Live SIEM ingestor** for Wazuh and Splunk, normalized into a common `Event` shape
-- **Graceful fallbacks** — every module has a stub; the pipeline never crashes on a missing dependency
-- **Flask dashboard** (`app.py`) for launching scans and downloading reports from the browser
-- **PDF generation** via WeasyPrint with custom Red/Blue themed CSS templates
+Point RedSee at one authorized target's root URL. It:
+
+1. **Crawls** the target (BFS, forms/links/JSON APIs, including endpoints only referenced inside JS bundles).
+2. **Discovers** hidden top-level paths via content discovery (ffuf) — sections nothing on the crawled pages links to.
+3. **Re-crawls** those discovered paths (bounded, scope-checked) to surface their own params.
+4. **Seeds** common parameter names onto discovered API paths that expose no crawlable parameter (a JSON endpoint like `/rest/products/search?q=` often has no HTML form advertising `q`).
+5. **Tests** every real parameter it now has — crawled or seeded — for SQL injection (sqlmap) and reflected XSS (Dalfox), each inside an isolated, egress-locked Docker sandbox.
+6. **Runs recon** in parallel: template/CVE matching (nuclei), HTTP fingerprinting (httpx), TLS inspection (tlsx).
+7. **Aggregates** all of it — findings, recon, tool statuses, discovery/seeding transparency — into one `scan_<id>.json`.
+8. **Reports** it two ways: a Red Team report (findings, evidence, remediation) and a Blue Team report (from live/ingested SIEM alerts — attack timeline, missed detections, ready-to-use Wazuh/Splunk rules).
+
+A single scan of the *root* URL — never told where `/market` or `/rest/products/search` live — finds vulnerabilities on both, automatically.
+
+---
+
+## Key capabilities
+
+- **Sandboxed, LLM-driven agent engine** — a plan→act→observe loop drives sqlmap and Dalfox through a fixed, harness-owned, detection-only tool profile. The model chooses *what* to test; it never supplies raw tool flags, and it can't escalate past a hard-coded ceiling (`--level`/`--risk` caps, no exploitation/enumeration flags, ever).
+- **Discovery-first scan orchestrator** (`modules/scan.py`) — crawl → discover (ffuf/httpx) → re-crawl discovered paths → build injection targets (crawled *and* seeded) → inject + recon concurrently, all under one shared `scan_id`.
+- **Common-parameter seeding** (`engine/params.py`) — a curated, pinned parameter-name wordlist gets paired onto parameter-less API paths, so a JSON endpoint with no visible form field still gets tested. Seeding only proposes *candidates*; a finding still requires the tool to confirm injection.
+- **Three scan modes** — `fast` (~2 min, top params only), `standard` (~5–8 min, discovery + seeding + scoped nuclei), `deep` (full breadth, no caps).
+- **Six sandboxed tools, one harness** — sqlmap (SQLi), Dalfox (reflected XSS), nuclei (template/CVE matching, memory-scoped to fit a 256 MB sandbox), httpx (fingerprinting), tlsx (TLS/cert inspection), ffuf (content discovery) — each pinned to an exact, sha256-verified release in the sandbox image.
+- **Evidence-only findings** — `injectable`/`found` is derived *solely* from parsed positive tool output (sqlmap's confirmed-injection text, Dalfox's `[POC]`/`[V]` lines, nuclei's JSONL matches, ffuf's hit lines). Never from a model's assertion.
+- **Default-deny scope gating** — an explicit authorization attestation + host allow-list must pass *before* any active test; every URL is scope-checked again immediately before the sandbox runs it.
+- **Egress-locked sandbox** — every tool run happens inside a throwaway, non-root, `--cap-drop=ALL`, read-only Docker container whose firewall allows *only* the single target `ip:port` it's authorized to contact — verified by a fail-closed isolation self-test before any result is trusted.
+- **Persistent scan store** — a SQLite-backed queue + status lifecycle + history (`storage/scan_store.py`) survives a process restart; a scan interrupted mid-run reconciles to `error`, never left stuck.
+- **Dark-themed operations console** — a Red Ops / Blue Ops dashboard: launch a scan (with a mode selector), watch it move through queued→running→done, browse history, drill into tool-by-tool status (with legible skip/error reasons, not just a bare status word), findings, and recon — plus a Blue Ops tab for SIEM log ingestion and blue-team reporting.
+- **Deterministic report fallback** — both the Red and Blue report generators can build a full, professional report directly from the scan/event data via string templates (no LLM call, no `weasyprint` system-lib dependency required) if an LLM/PDF toolchain isn't configured — a report button never dead-ends.
+- **Deployed** behind gunicorn/systemd with HTTP basic auth, reachable on a real domain.
 
 ---
 
 ## Architecture
 
 ```
-                              ┌──────────────────────┐
-   TARGET_URL  ──────────►   │  crawler.py          │
-                              │  (BFS → Sitemap)     │
-                              └──────────┬───────────┘
-                                         │ list[Endpoint]
-                  ┌──────────────────────┼──────────────────────────┐
-                  ▼                      ▼                          ▼
-         ┌─────────────────┐   ┌─────────────────┐         ┌─────────────────┐
-         │ modules/sqli.py │   │ modules/xss.py  │  ...    │ modules/auth.py │
-         │  scan_sqli()    │   │  scan_xss()     │         │  scan_auth()    │
-         └────────┬────────┘   └────────┬────────┘         └────────┬────────┘
-                  │                     │                          │
-                  └──────────────┬──────┴──────────┬───────────────┘
-                                 ▼                 ▼
-                          list[Finding]      ───►  Wazuh / Splunk
-                                 │                       │
-                                 ▼                       ▼
-                       ┌──────────────────┐   ┌────────────────────┐
-                       │  red_report.py   │   │  log_ingestor.py   │
-                       │  (LLM → PDF)     │   │  parse + fetch     │
-                       └──────────────────┘   └─────────┬──────────┘
-                                                         │ list[Event]
-                                                         ▼
-                                               ┌──────────────────┐
-                                               │  blue_report.py  │
-                                               │  (LLM → PDF)     │
-                                               └──────────────────┘
+                        ┌───────────────────────────────────────────┐
+                        │              modules/scan.py                │
+                        │         run_scan(target, mode=...)          │
+                        └───────────────────────┬─────────────────────┘
+                                                 │
+   1. crawl(root) ──────────────────────────────┤
+   2. discover (ffuf + httpx, concurrent) ──────┤
+   3. re-crawl discovered paths (bounded) ───────┤
+   4. build injection targets:                  │
+        crawled params  ∪  seeded params ────────┤
+   5. inject (sqlmap/Dalfox) + recon             │
+        (nuclei/tlsx), concurrent ───────────────┤
+   6. write ONE scan_<id>.json ──────────────────┘
+                                                 │
+                        ┌────────────────────────┴────────────────────────┐
+                        ▼                                                 ▼
+              ┌──────────────────┐                              ┌──────────────────┐
+              │ storage/         │                              │  outputs/         │
+              │ scan_store.py    │                              │  scan_<id>.json   │
+              │ (SQLite queue +  │                              │  findings/.sarif  │
+              │  history)        │                              │  run/nuclei/recon │
+              └────────┬─────────┘                              └──────────────────┘
+                       │
+                       ▼
+              ┌──────────────────┐        ┌──────────────────┐
+              │  app.py (Flask)  │───────▶│ red_report.py    │──▶ PDF or HTML
+              │  dark SOC console│        │ (LLM or          │
+              │  /api/scans      │        │  deterministic)  │
+              └────────┬─────────┘        └──────────────────┘
+                       │
+                       ▼
+              ┌──────────────────┐        ┌──────────────────┐
+              │ log_ingestor.py  │───────▶│ blue_report.py   │──▶ PDF or HTML
+              │ Wazuh/Splunk     │        │ (LLM or          │
+              │ parse + fetch    │        │  deterministic)  │
+              └──────────────────┘        └──────────────────┘
 ```
 
-**Red team data flow:** `crawler → modules/* → integration.run_full_scan → red_report`
-**Blue team data flow:** `log_ingestor → integration.run_blue_analysis → blue_report`
-**UI flow:** `app.py (Flask) → integration / log_ingestor → red_report / blue_report`
+**The agent engine** (`engine/`) is the layered core every active tool runs through:
 
-All cross-module data is typed by the dataclasses in `schemas.py` — these are a frozen team contract.
+| Layer | Module | Contract |
+|---|---|---|
+| 1 — Scope | `engine/scope.py` | Default-deny authorization + host allow-list gate. Nothing active runs until this passes. |
+| 2 — Sandbox | `engine/sandbox.py` | Isolated, egress-locked Docker execution. Fail-closed isolation self-test before any result is trusted. Frozen API. |
+| 3 — LLM | `engine/llm.py` | Provider-agnostic (OpenAI-compatible) BYOK client with a hard per-scan spend cap, checked before every call. |
+| 4 — Agents | `engine/agent.py` (sqlmap), `engine/xss_agent.py` (Dalfox), `engine/nuclei_agent.py` (nuclei) | The plan→act→observe loop. Model picks targets/depth; harness owns every tool flag. |
+| Deterministic recon | `engine/recon_tools.py` | httpx/tlsx/ffuf — no model in the loop, one fixed profile per tool. |
+| Seeding | `engine/params.py` | Injectable-parameter extraction from crawl output + common-parameter seeding for parameter-less API paths. |
+| Mapping | `engine/finding_map.py` | Maps a *confirmed* candidate to a schema-valid `Finding` — refuses anything else. |
+| Audit trail | `engine/report_io.py` | Writes `findings/.sarif/run/nuclei/recon` artifacts; scrubs secrets before anything touches disk. |
+
+Full rationale for every architectural choice is in [`DECISIONS.md`](DECISIONS.md) (D-001 through D-026); day-to-day state lives in [`HANDOFF.md`](HANDOFF.md) and [`PROGRESS.md`](PROGRESS.md).
 
 ---
 
-## Project Layout
+## Security model
+
+RedSee performs **active** testing (sqlmap, Dalfox) against real targets, so the harness — not the model — owns every safety-relevant decision:
+
+- **Authorization gate first.** `REDSEE_AUTHORIZED=true` and an explicit `REDSEE_ALLOWED_HOSTS` allow-list are required before any active test; refused targets are never touched.
+- **Scope-checked per action.** Every URL is checked against the allow-list immediately before it reaches a sandbox — not just once at scan start.
+- **Sandboxed, never the host.** All tool execution goes through `run_in_sandbox`: a throwaway, non-root container with `--cap-drop=ALL`, `--security-opt=no-new-privileges`, a read-only rootfs, resource caps (256 MB / 1 CPU / 128 PIDs), and **never** `--privileged` or `NET_ADMIN`.
+- **Default-deny egress.** A dedicated bridge network + host-managed iptables rules allow the container to reach *only* the single `ip:port` it's authorized to test — no DNS, no other host, no public internet, no SSH.
+- **Fail-closed isolation self-test.** Before any tool output is trusted, the sandbox proves from the inside that the target is reachable and everything else isn't. If that can't be confirmed, the run aborts with no output — a dead target can never masquerade as "clean."
+- **Evidence-only verdicts.** `injectable`/`found` comes solely from parsed positive tool output — sqlmap's confirmed-injection text, Dalfox's `[POC]`/`[V]` lines, nuclei's JSONL results, ffuf's hit lines. The model's own claims are never trusted, and a seeded *candidate* parameter only becomes a finding if the tool itself confirms it.
+- **Detection-only, permanently.** Exploitation/enumeration flags (`--os-shell`, `--dump`, `--users`, `--current-db`, ...) are hard-banned in the argv builder regardless of what the model asks for; nuclei's OOB/interactsh callbacks and intrusive/fuzz/brute template tags are excluded unconditionally.
+- **Hard spend cap.** One budget tracker per scan; a per-scan USD ceiling is checked *before* every LLM call, so a runaway loop can't overspend regardless of provider.
+- **No secrets in output.** Any LLM metadata (API keys, tokens) is scrubbed before touching any artifact on disk.
+- **Bounded, not unbounded.** Concurrency, injection-target counts, discovery re-crawls, and seeded parameters are all mode-aware capped — including a hard, mode-independent ceiling on total sandboxed injection runs per scan.
+
+---
+
+## Scan modes
+
+| Mode | Wall-clock | Breadth | Depth | Recon |
+|---|---|---|---|---|
+| **fast** | ~2 min | Top 5 crawled param-bearing endpoints only | Shallow (level/risk 1) | httpx + tlsx only |
+| **standard** | ~5–8 min | Discovery (4 re-crawled paths) + seeding (1 API path, the full lean param list) | Medium | + scoped nuclei + ffuf |
+| **deep** | full | Every param-bearing endpoint + wider discovery/seeding | Agent-default (full ladder) | Everything, nuclei's full default profile |
+
+Every mode's effective caps are recorded in the scan's `caps` block, and the discovery→injection loop's own counters (`paths_discovered`, `paths_recrawled`, `params_seeded`, `injection_targets_tested`) are recorded under `discovery` — so exactly how a scan was tuned is always visible, never implicit.
+
+---
+
+## Project layout
 
 ```
 RedSee/
-├── schemas.py                 # Frozen dataclass contract (DO NOT MODIFY)
-├── red_report.py              # LLM call + PDF generation (Red Team)
-├── blue_report.py             # LLM call + PDF generation (Blue Team)
-├── integration.py             # Pipeline orchestrator + stub-fallback
-├── crawler.py                 # BFS web crawler → Sitemap
-├── scanner.py                 # Standalone SQLi+XSS scanner
-├── app.py                     # Flask backend, 8 API routes
-├── log_ingestor.py            # Wazuh/Splunk parser + live Wazuh API
-├── requirements.txt
-├── .env / .env.example
+├── schemas.py                  # Frozen dataclass contract (Endpoint/Finding/Event/Sitemap)
+├── crawler.py                  # BFS crawler → Sitemap (incl. JS-embedded API path detection)
+├── app.py                      # Flask console: /api/scans spine + legacy routes + blue-team routes
+├── log_ingestor.py             # Wazuh/Splunk parsing + live Wazuh API fetch
+├── red_report.py               # Red Team report: LLM-authored PDF, or deterministic PDF/HTML fallback
+├── blue_report.py              # Blue Team report: same dual path as red_report.py
+├── integration.py              # Legacy pipeline orchestrator (static 4-scanner path)
+├── scanner.py                  # Standalone legacy SQLi+XSS CLI scanner
 │
-├── modules/                   # Scanner modules (one public fn each)
-│   ├── sqli.py
-│   ├── xss.py
-│   ├── idor.py
-│   └── auth.py
+├── engine/                     # The sandboxed, LLM-driven agent engine
+│   ├── scope.py                #   Layer 1 — authorization/scope gate
+│   ├── sandbox.py               #   Layer 2 — isolated Docker execution (frozen API)
+│   ├── llm.py                  #   Layer 3 — BYOK LLM client + budget tracker
+│   ├── agent.py                #   Layer 4 — SQLi agent (drives sqlmap)
+│   ├── xss_agent.py            #   Layer 4 — XSS agent (drives Dalfox)
+│   ├── nuclei_agent.py         #   Layer 4 — template-scan agent (drives nuclei)
+│   ├── recon_tools.py          #   Deterministic httpx/tlsx/ffuf runners (no model)
+│   ├── params.py               #   Injectable-param extraction + common-parameter seeding
+│   ├── finding_map.py          #   Candidate → schema-valid Finding (confirmed-only)
+│   └── report_io.py            #   findings/SARIF/run.json audit-trail writer + secret scrub
 │
-├── utils/
-│   └── http_helpers.py        # HTTPSession class + DVWA auth helper
+├── modules/
+│   ├── scan.py                 # THE unified discovery→injection scan orchestrator
+│   ├── recon.py                # Standalone nuclei+httpx+tlsx+ffuf runner
+│   ├── sqli.py / xss.py        # Agent-backed-first, legacy-direct-HTTP-fallback wrappers
+│   └── idor.py / auth.py       # Legacy static modules (not yet agent-converted)
 │
-├── prompts/                   # LLM system prompts
-│   ├── red_prompt.txt
-│   └── blue_prompt.txt
+├── storage/
+│   └── scan_store.py           # SQLite-backed scan queue + status lifecycle + history
 │
-├── pdf_templates/             # WeasyPrint CSS
-│   ├── red.css
-│   └── blue.css
-│
-├── sample_data/               # Demo + fallback JSON fixtures
-│   ├── mock_findings.json
-│   ├── mock_sitemap.json
-│   ├── mock_wazuh_alerts.json
-│   ├── findings_fallback.json
-│   ├── wazuh_alerts_fallback.json
-│   ├── sample_wazuh_alerts.json
-│   └── sample_splunk_export.json
-│
-├── tests/                     # Standalone test scripts (run with `python`)
-│   ├── test_sqli.py
-│   ├── test_xss.py
-│   ├── test_idor.py
-│   ├── test_auth.py
-│   ├── test_ingestor.py
-│   ├── test_crawler.py
-│   ├── test_red_report.py
-│   └── test_blue_report.py
+├── templates/index.html        # Dark SOC console (Red Ops / Blue Ops)
+├── static/{style.css,script.js}# Console theme + frontend logic
 │
 ├── docker/
-│   └── demo-helper.sh         # DVWA + Juice Shop launcher
+│   ├── demo-helper.sh          # Launches DVWA / Juice Shop / the themed marketplace demo
+│   └── sandbox/                # Dockerfile (sqlmap/Dalfox/nuclei/httpx/tlsx/ffuf, pinned+
+│                                #   sha256-verified) + bundled wordlists (common.txt, params.txt)
 │
-├── docs/
-│   └── demo_script.md
+├── demo-target/                # Themed "RedSees Marketplace" demo target
+│   ├── redsees-themepack/      #   Juice Shop reskin (frontend, images, fonts)
+│   ├── gateway/                #   Node reverse-proxy unifying Juice Shop + sinks on one port
+│   └── marketplace_sinks.py    #   Companion Flask app with reflected-XSS/SQLi sinks
 │
-└── outputs/                   # Generated PDFs + findings JSON (gitignored)
-    └── .gitkeep
+├── scripts/
+│   └── scan_root_verify.py     # Live scan verification/diagnostic script
+│
+├── utils/http_helpers.py       # HTTPSession (auth, cookies, rate limiting)
+├── prompts/                    # LLM system prompts (per agent)
+├── pdf_templates/              # red.css / blue.css (shared by LLM + deterministic paths)
+├── sample_data/                # Demo + fallback JSON fixtures
+├── tests/                      # 30 test files — pytest-discoverable, most fully offline
+│
+├── DECISIONS.md                # Architecture decision record (D-001 → D-026)
+├── PROGRESS.md                 # Roadmap + dated session log
+├── HANDOFF.md                  # Live session state snapshot
+├── AGENTS.md                   # Frozen-contract + invariants reference
+│
+└── outputs/                    # scan_<id>.json, findings/.sarif, reports (gitignored)
 ```
 
 ---
@@ -158,263 +220,169 @@ RedSee/
 ### Prerequisites
 
 - **Python 3.10+**
-- **Docker** (only if you want local DVWA / Juice Shop targets)
-- **WeasyPrint system deps** on Linux: `libpango`, `libcairo`, `libgdk-pixbuf` (already installed on macOS and Windows via wheels)
+- **Docker** (native Docker Engine — required for the sandbox's iptables-based egress isolation; Docker Desktop's split-VM architecture on Windows/Mac does **not** work for this, since it runs containers in a separate network namespace from the host running the Python process. On Windows, use **WSL2 with a native Docker Engine installed inside the distro**, not Docker Desktop's WSL2 integration.)
+- **Root** on whichever host runs the scan (the sandbox layer manages `iptables` rules directly)
 
 ### Steps
 
 ```bash
-# 1. Clone
-git clone https://github.com/<your-org>/RedSee.git
-cd RedSee
+git clone <this-repo>
+cd RedSee-ITSkillsFinalProject
 
-# 2. Virtual env
-python -m venv venv
-source venv/bin/activate          # Linux/macOS
-# venv\Scripts\activate           # Windows
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt        # if weasyprint fails to install, skip it —
+                                        # the deterministic report path doesn't need it
 
-# 3. Install
-pip install -r requirements.txt
-
-# 4. Configure
 cp .env.example .env
-# edit .env with your values
+# edit .env — see Configuration below
+
+bash docker/sandbox/build.sh           # builds the pinned sqlmap/Dalfox/nuclei/httpx/tlsx/ffuf image
 ```
 
 ---
 
 ## Configuration
 
-All runtime config comes from `.env`. Copy `.env.example` to `.env` and fill in:
+All runtime config comes from `.env` (copy from `.env.example`).
 
-| Key | Required | Default | Purpose |
-|---|---|---|---|
-| `LLM_PROVIDER` | yes | `openrouter` | `openrouter` / `deepseek` / `ollama` |
-| `OPENROUTER_API_KEY` | if openrouter | — | OpenRouter API key |
-| `OPENROUTER_BASE_URL` | no | `https://openrouter.ai/api/v1` | OpenRouter endpoint |
-| `LLM_MODEL` | no | `deepseek/deepseek-v4-flash` | Fast model |
-| `LLM_MODEL_DETAILED` | no | `anthropic/claude-sonnet-4-20250514` | Polished model |
-| `OLLAMA_URL` / `OLLAMA_MODEL` | if ollama | — | Local fallback |
-| `TARGET_URL` | yes | — | Pentest target (DVWA / Juice Shop / custom) |
-| `TARGET_AUTH_USER` / `TARGET_AUTH_PASS` | for authenticated scans | — | Login creds |
-| `WAZUH_API_URL` / `WAZUH_API_USER` / `WAZUH_API_PASS` | for live Wazuh | — | SIEM API |
-| `WAZUH_DASHBOARD_URL` | no | — | Wazuh UI link |
+**Agent engine (required for active scanning):**
+
+| Key | Purpose |
+|---|---|
+| `REDSEE_AUTHORIZED` | Must be `"true"` before any active test runs |
+| `REDSEE_ALLOWED_HOSTS` | Comma-separated exact hostnames — default-deny scope allow-list |
+| `REDSEE_TARGET_URL` | Default target for CLI entry points |
+| `REDSEE_RATE_LIMIT` | Max requests/min against in-scope hosts |
+| `REDSEE_LLM_BASE_URL` / `REDSEE_LLM_MODEL` / `REDSEE_LLM_API_KEY` | Any OpenAI-compatible endpoint — a local Ollama, OpenRouter, etc. |
+| `REDSEE_LLM_MAX_USD` | Hard per-scan spend cap — checked before every LLM call |
+| `REDSEE_MAX_PARALLEL_SANDBOXES` | How many sandboxed stages run concurrently (default 2) |
+
+**Dashboard:**
+
+| Key | Purpose |
+|---|---|
+| `REDSEE_DASH_USER` / `REDSEE_DASH_PASS` | HTTP basic auth for the console (unset password = auth disabled, for local dev) |
+
+**Blue team / legacy pipeline:**
+
+| Key | Purpose |
+|---|---|
+| `WAZUH_API_URL` / `WAZUH_API_USER` / `WAZUH_API_PASS` | Live Wazuh SIEM API |
+| `LLM_PROVIDER` / `OPENROUTER_API_KEY` / `TARGET_AUTH_USER` / ... | Legacy pipeline + LLM-authored report path |
+
+See `.env.example` for the complete, commented list.
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
-# 1. Start demo targets (DVWA + Juice Shop) + Flask server
-bash docker/demo-helper.sh start
+# 1. Bring up a demo target (themed marketplace, or plain DVWA/Juice Shop)
+bash docker/demo-helper.sh marketplace
 
-# 2. Open the dashboard
-# http://localhost:5000
+# 2. Start the console
+python app.py
+# → http://localhost (or wherever deployed)
 
-# 3. Click "Start Scan" — the pipeline runs end to end
+# 3. In the dashboard: enter the target URL, pick a mode (fast/standard/deep),
+#    confirm authorization, launch. Watch it move queued → running → done.
 
-# 4. Download the Red report and the Blue report
+# 4. Drill into the result: tools_run status (with legible skip/error reasons),
+#    confirmed findings, recon observations, discovery/seeding transparency.
+
+# 5. Export a Red Report (PDF if weasyprint+LLM configured, HTML fallback otherwise).
 ```
 
-That's it. The full pipeline crawls the target, runs all four scanners, generates the Red PDF, and (if Wazuh is configured) generates the Blue PDF.
-
----
-
-## Usage
-
-### Full Pipeline (Recommended)
-
-Runs crawler → all 4 scanners → red report. Optionally run blue report if SIEM is available.
+Or drive a scan directly, without the dashboard:
 
 ```python
-from integration import run_full_scan, run_blue_analysis
+from engine.scope import ScopeConfig
+from modules.scan import run_scan
 
-# Red team
-result = run_full_scan("http://localhost", scan_id="demo_001")
-print(result["report_path"])           # → outputs/red_report_demo_001.pdf
-
-# Blue team (needs Wazuh or sample_data/sample_wazuh_alerts.json)
-result = run_blue_analysis("sample_data/sample_wazuh_alerts.json", report_id="incident_001")
-print(result["report_path"])           # → outputs/blue_report_incident_001.pdf
+scope = ScopeConfig(target_url="http://target:3000/", allowed_hosts=["target"], authorized=True)
+record = run_scan("http://target:3000/", scope_config=scope, mode="standard")
+print(record["summary"])
 ```
 
-Or as a CLI smoke test:
+---
 
-```bash
-python integration.py
-```
+## Dashboard / API routes
 
-### Standalone Scanner
-
-Run SQLi + XSS only (no full pipeline):
-
-```bash
-# Auto-discover + scan
-python scanner.py
-
-# Specific target
-python scanner.py --target http://localhost:80
-
-# Use a pre-crawled sitemap
-python scanner.py --sitemap sample_data/mock_sitemap.json
-
-# Quick mode — targeted endpoints only
-python scanner.py --quick
-```
-
-### Crawler Only
-
-```bash
-python crawler.py http://localhost
-# Writes Sitemap JSON, prints summary
-```
-
-### Log Ingestor Only
-
-```bash
-# Parse a local file
-python log_ingestor.py sample_data/sample_wazuh_alerts.json
-
-# Or import the parser
-python -c "from log_ingestor import ingest_log_file; print(ingest_log_file('sample_data/sample_splunk_export.json'))"
-```
-
-### Report Engines Only
-
-```bash
-# Generate a Red report from a findings JSON
-python red_report.py
-
-# Generate a Blue report from an events JSON
-python blue_report.py
-```
-
-### Flask Web UI
-
-```bash
-python app.py
-# Open http://localhost:5000
-```
-
-The dashboard exposes all 8 routes:
-
-| Method | Route | Use |
+| Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/` | Dashboard UI |
-| `POST` | `/scan` | Start a red-team scan in the background |
-| `GET` | `/scan/<id>/status` | Poll scan progress |
-| `GET` | `/scan/<id>/findings` | Fetch findings JSON for a scan |
-| `POST` | `/scan/<id>/report` | Generate the Red PDF for a scan |
+| `GET` | `/` | Console UI |
+| `POST` | `/api/scans` | Queue a scan — `{"target_url", "authorized", "mode"}` |
+| `GET` | `/api/scans` | List scan history (newest first) |
+| `GET` | `/api/scans/<id>` | Full scan record (status + `scan_<id>.json` once done) |
+| `POST` | `/scan/<id>/report` | Generate the Red report (PDF or HTML) |
 | `POST` | `/analyze-logs` | Parse a Wazuh/Splunk log file |
 | `POST` | `/fetch-wazuh-alerts` | Fetch live alerts from the Wazuh API |
-| `POST` | `/generate-blue-report` | Generate the Blue PDF from events |
-| `GET` | `/downloads/<filename>` | Download a generated PDF |
+| `POST` | `/generate-blue-report` | Generate the Blue report from ingested events |
+| `GET` | `/downloads/<filename>` | Download a generated report |
+
+The legacy `/scan`, `/scan/<id>/status`, `/scan/<id>/findings` routes (backed by `integration.py`'s static pipeline) still exist for the original 4-scanner flow, gated behind graceful degradation if that pipeline's dependencies aren't installed.
 
 ---
 
-## Vulnerability Modules
+## Blue team / SIEM ingestion
 
-Every module is a single public function with the same signature:
+`log_ingestor.py` normalizes Wazuh alerts or Splunk exports (JSON or CSV) into a common `Event` shape, live or from a file:
 
-```python
-def scan_<name>(endpoints: list[Endpoint], session: Optional[HTTPSession] = None) -> list[Finding]
+```bash
+python log_ingestor.py sample_data/sample_wazuh_alerts.json
 ```
 
-| Module | File | Detection techniques |
-|---|---|---|
-| SQLi | `modules/sqli.py` | error-based, time-based blind, boolean-based blind, UNION-based (SQLite, MySQL, PostgreSQL, MSSQL, Oracle) |
-| XSS | `modules/xss.py` | reflected, stored, DOM-based (HTML + JSON contexts) |
-| IDOR | `modules/idor.py` | object-level authorization checks via parameter mutation |
-| BrokenAuth | `modules/auth.py` | default credentials, weak session handling, missing auth on sensitive endpoints |
-
-If `HTTPSession` is passed, scanners use the pre-authenticated session. Otherwise they make raw `requests` calls with a fresh session.
+or via the dashboard's Blue Ops tab: upload a log file or fetch live Wazuh alerts, triage by severity, and export an incident report — `blue_report.py` builds it either via an LLM (attack timeline, missed-detection analysis, ready-to-paste Wazuh/Splunk rules) or the same deterministic fallback pattern as the Red report, so it never dead-ends on a missing API key.
 
 ---
 
-## Output Files
+## Reports
 
-Everything lands in `outputs/`:
+Both report generators follow the same pattern:
 
-```
-outputs/
-├── findings_<scan_id>.json      # Raw findings (one JSON per scan)
-├── red_report_<scan_id>.pdf     # Red Team report
-├── blue_report_<report_id>.pdf  # Blue Team report
-├── red_report_test_001.pdf      # Standalone red_report.py test output
-├── blue_report_incident_001.pdf # Standalone blue_report.py test output
-├── red_report_fallback.pdf      # Demo-day fallback (always available)
-└── blue_report_fallback.pdf     # Demo-day fallback (always available)
-```
+1. **LLM-authored** (`generate_red_report` / `generate_blue_report`) — a real LLM call produces polished, narrative prose (executive summary, CVSS-style scoring, remediation guidance), rendered to PDF via `weasyprint`.
+2. **Deterministic fallback** (`generate_deterministic_report` / `generate_deterministic_blue_report`) — the *same* report structure built directly from the scan/event data via string templates — no LLM call, no `weasyprint` system-library dependency. Renders PDF if `weasyprint` happens to be importable, otherwise a self-contained HTML file.
 
-The `outputs/` directory is gitignored except for `.gitkeep`.
+The dashboard's report buttons always use the deterministic path by default, so a report is always produced — a 0-finding scan still gets a real "no vulnerabilities confirmed" report, not an error.
 
 ---
 
-## Demo Mode (Offline)
+## Demo target
 
-Every component has a fallback so the pipeline can run with **no live target, no LLM, and no SIEM**:
-
-| Component | Live | Fallback |
-|---|---|---|
-| Crawler | BFS against target | Returns an empty Sitemap (pipeline continues, findings=0) |
-| Vulnerability scanners | Real requests | Each module returns `[]` on empty Sitemap |
-| LLM | OpenRouter / DeepSeek / Claude | Swap to Ollama via `LLM_PROVIDER=ollama` |
-| Wazuh fetch | Live API | Returns 500 JSON (graceful error, no crash) |
-| PDF generation | `outputs/red_report_<id>.pdf` | Falls back to `outputs/red_report_fallback.pdf` |
-| Demo data | `sample_data/*.json` | Pre-built fixtures loadable from the Flask UI |
-
-For a guaranteed demo with no external services, point the pipeline at `sample_data/findings_fallback.json` and `sample_data/wazuh_alerts_fallback.json` — pre-built Red and Blue PDFs will be produced.
+`demo-target/` ships a themed "RedSees Marketplace" — a reskinned OWASP Juice Shop plus a companion Flask service with deliberately planted reflected-XSS/SQLi sinks, unified behind a small Node gateway on one port. `docker/demo-helper.sh marketplace` builds and starts it. Ground-truth vulnerabilities are documented in `docs/redsees_marketplace_vulns.txt` for verifying scan results against a known-answer target.
 
 ---
 
 ## Testing
 
-Tests are **standalone scripts**, not pytest. Each test file is runnable as a plain Python script.
+Most tests are fully offline (mocked sandbox/LLM/network) and pytest-discoverable:
 
 ```bash
-# From project root
-python tests/test_sqli.py
-python tests/test_xss.py
-python tests/test_idor.py
-python tests/test_auth.py
-python tests/test_ingestor.py
-python tests/test_crawler.py
-python tests/test_red_report.py
-python tests/test_blue_report.py
+PYTHONPATH=. python -m pytest tests/ -v
 ```
 
-Some tests (`test_sqli.py`, `test_xss.py`, `test_crawler.py` DVWA/Juice Shop variants) require a live target from `TARGET_URL` in `.env`. They are designed to fail gracefully when the target is unreachable — that is expected and not a regression.
-
-Run only the tests for modules you changed.
+A handful of legacy tests (`test_sqli.py`, `test_xss.py` DVWA-live variants) require a reachable `TARGET_URL` and fail gracefully (connection-refused, not a crash) when no live target is configured — expected in an offline dev environment, not a regression.
 
 ---
 
-## Project Constraints
+## Known limitations
 
-These are team-wide rules enforced by review, not by tooling. See `AGENTS.md` for the full list.
+- `modules/idor.py` and `modules/auth.py` are still the original static, non-agentic scanners — not yet converted to the sandboxed agent pattern.
+- The legacy `/scan` pipeline (`integration.py`) and the new `/api/scans` spine (`modules/scan.py` + `storage/scan_store.py`) coexist; the legacy path is kept only for backward compatibility with the original static 4-scanner flow.
+- Sandbox isolation requires a native Docker Engine + root — Docker Desktop's split-VM architecture (common on Windows/Mac) does not satisfy the host-level iptables assumption the sandbox layer relies on.
+- No automatic cleanup yet for sandbox-network/iptables state left behind by a killed (not gracefully stopped) scan process — see `HANDOFF.md` for the manual inspect/clean procedure.
 
-- `schemas.py` is a **frozen contract**. Do not add, rename, or delete fields.
-- Enum values are **exact strings**:
-  - Severity: `Critical` / `High` / `Medium` / `Low`
-  - Finding type: `SQLi` / `XSS` / `IDOR` / `BrokenAuth`
-  - Endpoint type: `form` / `api` / `link` / `page`
-  - Event source: `Wazuh` / `Splunk`
-- `Finding.timestamp` must be **ISO 8601 with trailing `Z`**.
-- New scanner modules must expose **one public function** and **add a stub + try/except block** in `integration.py` following the existing pattern.
-- **No formatter, linter, or type-checker** is configured. Do not add config files for these unless asked.
-- `red_report.py` owns `call_llm`, `load_prompt`, `markdown_to_pdf`. `blue_report.py` imports from it — do not duplicate.
+Full architecture rationale: [`DECISIONS.md`](DECISIONS.md). Current session state: [`HANDOFF.md`](HANDOFF.md). Roadmap: [`PROGRESS.md`](PROGRESS.md).
 
 ---
 
-## Tech Stack
+## Tech stack
 
-- **Python 3.10+**
-- `requests` + `beautifulsoup4` + `lxml` — crawling and HTTP
-- `flask` + `flask-cors` — web UI
-- `weasyprint` + `markdown` — PDF generation
-- `openai` (>=1.6.0) — OpenAI-compatible chat completions (works with OpenRouter, DeepSeek, Ollama)
-- `python-dotenv` — `.env` loading
-- **Docker** — local DVWA / Juice Shop demo targets
+- **Python 3.10+** — `requests`, `beautifulsoup4`, `lxml` (crawling); `flask`, `flask-cors` (dashboard); `markdown` + optional `weasyprint` (reports); `openai>=1.6.0` (OpenAI-compatible LLM client, works with OpenRouter/DeepSeek/Ollama); `python-dotenv`
+- **Docker** — sandboxed tool execution: sqlmap, Dalfox v2.13.0, nuclei v3.11.0 (+ templates v10.4.5), httpx v1.9.0, tlsx v1.2.2, ffuf v2.1.0 — every binary pinned to an exact release and sha256-verified at build time
+- **SQLite** (stdlib) — persistent scan store
+- **gunicorn + systemd** — production deployment
 
 ---
 
