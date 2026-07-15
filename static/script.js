@@ -16,6 +16,7 @@ const state = {
   scans: [],
   selectedId: null,
   blue: { events: [], analysisId: null },
+  settingsLoaded: false,
 };
 
 /* ── utilities ─────────────────────────────────────────── */
@@ -56,11 +57,15 @@ function setView(view) {
     b.setAttribute("aria-current", on ? "true" : "false");
   });
   $$(".view").forEach((v) => v.classList.toggle("is-active", v.dataset.viewPanel === view));
-  const meta = view === "red"
-    ? ["Red Ops", "Authorize a target, launch a scan, and read the unified result."]
-    : ["Blue Ops", "Ingest SIEM telemetry, triage by severity, and export an incident report."];
+  const META = {
+    red: ["Red Ops", "Authorize a target, launch a scan, and read the unified result."],
+    blue: ["Blue Ops", "Ingest SIEM telemetry, triage by severity, and export an incident report."],
+    settings: ["Settings", "Configure the LLM engine, per-scan cost cap, and scan guards — no .env editing."],
+  };
+  const meta = META[view] || META.red;
   $("#viewTitle").textContent = meta[0];
   $("#viewSub").textContent = meta[1];
+  if (view === "settings" && !state.settingsLoaded) loadSettings();
 }
 function startClock() {
   const tick = () => { $("#clock").textContent = fmtClock(new Date()); };
@@ -447,12 +452,113 @@ function updateStatusline() {
   $("#slTick").textContent = active ? "scanning" : "standby";
 }
 
+/* ── SETTINGS: LLM config, budget, guards ──────────────── */
+const OLLAMA_DEFAULT_URL = "http://localhost:11434/v1";
+
+function initSettings() {
+  $$("input[name='provider']").forEach((r) =>
+    r.addEventListener("change", () => applyProviderUI(r.value)));
+  $("#saveSettingsBtn").addEventListener("click", saveSettings);
+  $("#testSettingsBtn").addEventListener("click", testSettings);
+}
+
+function currentProvider() {
+  const r = $("input[name='provider']:checked");
+  return r ? r.value : "external";
+}
+
+function applyProviderUI(provider) {
+  const local = provider === "local";
+  $("#apiKeyField").hidden = local;
+  const base = $("#setBaseUrl");
+  if (local && !base.value.trim()) base.value = OLLAMA_DEFAULT_URL;
+  if (!local && base.value.trim() === OLLAMA_DEFAULT_URL) base.value = "";
+}
+
+function fillSettings(s) {
+  const prov = s.provider === "local" ? "local" : "external";
+  const radio = $(`input[name='provider'][value='${prov}']`);
+  if (radio) radio.checked = true;
+  $("#setBaseUrl").value = s.base_url || "";
+  $("#setModel").value = s.model || "";
+  $("#setApiKey").value = "";
+  $("#apiKeyHint").textContent = s.api_key_set ? `(current: ${s.api_key_hint})` : "(none set)";
+  $("#setMaxUsd").value = s.max_usd ?? "";
+  $("#setTimeout").value = s.timeout_sec ?? "";
+  $("#setRateLimit").value = s.rate_limit ?? "";
+  $("#setMaxParallel").value = s.max_parallel ?? "";
+  $("#setPriceIn").value = s.price_in ?? "";
+  $("#setPriceOut").value = s.price_out ?? "";
+  applyProviderUI(prov);
+  const tag = $("#llmStatusTag");
+  tag.textContent = s.configured ? "ready" : "unconfigured";
+  tag.classList.toggle("tag-ready", !!s.configured);
+}
+
+async function loadSettings() {
+  try {
+    const s = await api("/api/settings");
+    fillSettings(s);
+    state.settingsLoaded = true;
+  } catch (e) {
+    note("settingsNote", e.message || "Could not load settings.", "err");
+  }
+}
+
+function gatherSettings() {
+  const p = {
+    provider: currentProvider(),
+    base_url: $("#setBaseUrl").value.trim(),
+    model: $("#setModel").value.trim(),
+    max_usd: $("#setMaxUsd").value.trim(),
+    timeout_sec: $("#setTimeout").value.trim(),
+    rate_limit: $("#setRateLimit").value.trim(),
+    max_parallel: $("#setMaxParallel").value.trim(),
+    price_in: $("#setPriceIn").value.trim(),
+    price_out: $("#setPriceOut").value.trim(),
+  };
+  const key = $("#setApiKey").value;   // blank => backend keeps the current key
+  if (key) p.api_key = key;
+  return p;
+}
+
+async function saveSettings() {
+  const btn = $("#saveSettingsBtn"); btn.disabled = true;
+  note("settingsNote", "Saving…", "info");
+  try {
+    const s = await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gatherSettings()),
+    });
+    fillSettings(s);
+    note("settingsNote", "Settings saved — the next scan will use them.", "ok");
+  } catch (e) {
+    note("settingsNote", e.message || "Could not save settings.", "err");
+  } finally { btn.disabled = false; }
+}
+
+async function testSettings() {
+  const btn = $("#testSettingsBtn"); const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Testing…";
+  note("settingsNote", "Reaching the endpoint…", "info");
+  try {
+    const r = await api("/api/settings/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gatherSettings()),
+    });
+    note("settingsNote", r.detail || (r.ok ? "Reachable." : "Not reachable."), r.ok ? "ok" : "err");
+  } catch (e) {
+    note("settingsNote", e.message || "Test failed.", "err");
+  } finally { btn.disabled = false; btn.textContent = prev; }
+}
+
 /* ── boot ──────────────────────────────────────────────── */
 function init() {
   $$(".nav-item").forEach((b) => b.addEventListener("click", () => setView(b.dataset.nav)));
   startClock();
   initLaunch();
   initBlue();
+  initSettings();
   setView("red");
   refreshScans();
   setInterval(refreshScans, 3000);   // live queue + running-scan detail

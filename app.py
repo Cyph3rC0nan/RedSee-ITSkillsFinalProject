@@ -74,6 +74,16 @@ app.secret_key = os.environ.get("REDSEE_SECRET_KEY") or secrets.token_hex(32)
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
+# Apply any console-saved runtime settings (LLM key/endpoint, cost cap, scan
+# guards) on top of .env, so operator changes made in the dashboard's Settings
+# tab survive a restart. Read from os.environ at scan time, so they also take
+# effect live (single gunicorn worker). Best-effort — never blocks boot.
+import console_settings
+try:
+    console_settings.apply_saved_to_env()
+except Exception as _exc:                         # noqa: BLE001
+    print(f"[app.py] could not apply saved settings: {_exc}")
+
 # ─── Session login gate ────────────────────────────────────
 # The console is a pentest control surface; when exposed on a network it must not
 # be open. Credentials come from the environment (REDSEE_DASH_USER / _PASS, loaded
@@ -268,6 +278,36 @@ def api_get_scan(scan_id):
     if row is None:
         return jsonify({"error": "Scan not found"}), 404
     return jsonify(row)
+
+
+# ─── SETTINGS API: LLM config, cost cap, scan guards ───────
+# Lets the operator configure the engine from the dashboard instead of editing
+# .env. Values are applied to os.environ (live for the next scan) and persisted
+# to outputs/settings.json. The API key is never returned in full (masked hint).
+
+@app.route("/api/settings")
+def api_get_settings():
+    """Current effective config the next scan would use (API key masked)."""
+    return jsonify(console_settings.public_settings())
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_save_settings():
+    """Validate + persist + apply. Body uses the Settings form field names."""
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(console_settings.save_settings(data))
+    except console_settings.SettingsError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:                       # noqa: BLE001 - never 500 opaquely
+        return jsonify({"error": f"Could not save settings: {exc}"}), 500
+
+
+@app.route("/api/settings/test", methods=["POST"])
+def api_test_settings():
+    """Reachability check for the endpoint being configured (does not persist)."""
+    data = request.get_json(silent=True) or {}
+    return jsonify(console_settings.test_connection(data))
 
 
 # ─── ROUTE: Scan Status ────────────────────────────────────

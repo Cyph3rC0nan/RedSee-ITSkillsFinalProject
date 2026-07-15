@@ -28,6 +28,11 @@
           <span class="nav-label">Blue Ops</span>
           <span class="nav-meta">defense</span>
         </button>
+        <button class="nav-item" data-nav="settings">
+          <span class="nav-dot dot-neutral"></span>
+          <span class="nav-label">Settings</span>
+          <span class="nav-meta">config</span>
+        </button>
       </nav>
 
       <div class="rail-foot">
@@ -259,6 +264,116 @@
                 </tbody>
               </table>
             </div>
+          </section>
+
+        </div>
+      </section>
+
+      <!-- ═══ SETTINGS ══════════════════════════════════════════ -->
+      <section class="view view-settings" data-view-panel="settings">
+        <div class="grid-settings">
+
+          <!-- LLM engine -->
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>LLM Engine</h2>
+              <span class="panel-tag" id="llmStatusTag">unconfigured</span>
+            </div>
+            <p class="settings-lead">
+              The agent needs an OpenAI-compatible LLM to plan scans. Use an external
+              provider with an API key, or a local model via Ollama — no <span class="mono">.env</span> editing.
+            </p>
+
+            <div class="field">
+              <span class="field-label">Provider</span>
+              <div class="seg-toggle" role="radiogroup" aria-label="LLM provider">
+                <label class="seg-opt"><input type="radio" name="provider" value="external" /><span class="seg-chip">External API</span></label>
+                <label class="seg-opt"><input type="radio" name="provider" value="local" /><span class="seg-chip">Local (Ollama)</span></label>
+              </div>
+            </div>
+
+            <label class="field">
+              <span class="field-label">Base URL</span>
+              <input type="text" id="setBaseUrl" spellcheck="false" autocapitalize="off"
+                     placeholder="https://openrouter.ai/api/v1" />
+            </label>
+
+            <label class="field">
+              <span class="field-label">Model</span>
+              <input type="text" id="setModel" spellcheck="false" autocapitalize="off"
+                     placeholder="anthropic/claude-sonnet-4" />
+            </label>
+
+            <label class="field" id="apiKeyField">
+              <span class="field-label">API key <span class="field-hint" id="apiKeyHint"></span></span>
+              <input type="password" id="setApiKey" autocomplete="off" spellcheck="false"
+                     placeholder="sk-…  (leave blank to keep the current key)" />
+            </label>
+
+            <div class="settings-actions">
+              <button class="btn btn-cyan" id="saveSettingsBtn">Save settings</button>
+              <button class="btn btn-ghost" id="testSettingsBtn">Test connection</button>
+            </div>
+            <p class="form-note" id="settingsNote" role="status" aria-live="polite"></p>
+          </section>
+
+          <!-- Budget + guards -->
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>Budget &amp; Guards</h2>
+              <span class="panel-tag tag-cyan">per scan</span>
+            </div>
+            <p class="settings-lead">Hard limits enforced on every scan. The cost cap stops the agent before it can overspend.</p>
+
+            <label class="field">
+              <span class="field-label">LLM cost cap (USD / scan)</span>
+              <div class="input-suffix">
+                <input type="number" id="setMaxUsd" min="0" step="0.05" placeholder="1.00" />
+                <span class="suffix-unit">$ / scan</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Request timeout</span>
+              <div class="input-suffix">
+                <input type="number" id="setTimeout" min="1" step="1" placeholder="120" />
+                <span class="suffix-unit">sec</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Rate limit</span>
+              <div class="input-suffix">
+                <input type="number" id="setRateLimit" min="1" step="1" placeholder="60" />
+                <span class="suffix-unit">req / min</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Max parallel sandboxes</span>
+              <div class="input-suffix">
+                <input type="number" id="setMaxParallel" min="1" max="8" step="1" placeholder="2" />
+                <span class="suffix-unit">containers</span>
+              </div>
+            </label>
+
+            <details class="settings-adv">
+              <summary>Token pricing (for cost tracking)</summary>
+              <label class="field">
+                <span class="field-label">Input price</span>
+                <div class="input-suffix">
+                  <input type="number" id="setPriceIn" min="0" step="0.0001" placeholder="0.0" />
+                  <span class="suffix-unit">$ / 1K tok</span>
+                </div>
+              </label>
+              <label class="field">
+                <span class="field-label">Output price</span>
+                <div class="input-suffix">
+                  <input type="number" id="setPriceOut" min="0" step="0.0001" placeholder="0.0" />
+                  <span class="suffix-unit">$ / 1K tok</span>
+                </div>
+              </label>
+            </details>
           </section>
 
         </div>

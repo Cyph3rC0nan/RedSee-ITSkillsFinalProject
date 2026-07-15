@@ -359,6 +359,28 @@ tbody tr:last-child td { border-bottom: none; }
 .events-table tr.web-attack:first-child td { box-shadow: inset 2px 0 0 var(--cyan); }
 .dist-web { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--ink-dim); display: flex; align-items: center; gap: 7px; }
 
+/* ── Settings tab ─────────────────────────────────────────── */
+.nav-dot.dot-neutral { background: var(--ink-faint); box-shadow: none; }
+.nav-item.is-active[data-nav="settings"] { box-shadow: inset 2px 0 0 var(--ink-faint); }
+.grid-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+.settings-panel { max-width: 640px; }
+.settings-lead { font-size: 13px; line-height: 1.6; color: var(--ink-dim); margin: 0 0 20px; }
+#llmStatusTag { color: var(--ink-faint); background: var(--panel-2); }
+#llmStatusTag.tag-ready { color: var(--ok); background: rgba(55, 217, 138, 0.1); }
+.field-hint { font-family: var(--mono); font-size: 9px; letter-spacing: 0.3px; text-transform: none; color: var(--ink-faint); margin-left: 6px; }
+.seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg-opt { position: relative; cursor: pointer; }
+.seg-opt input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.seg-chip { display: flex; align-items: center; justify-content: center; padding: 11px; border: 1px solid var(--line-hi); border-radius: var(--radius); background: var(--bg-2); font-family: var(--mono); font-size: 12px; color: var(--ink-dim); transition: border-color .15s, background .15s, color .15s; }
+.seg-opt:hover .seg-chip { border-color: var(--ink-faint); color: var(--ink); }
+.seg-opt input:checked + .seg-chip { border-color: var(--cyan); background: var(--cyan-glow); color: var(--cyan-soft); }
+.seg-opt input:focus-visible + .seg-chip { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.settings-adv { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 14px; }
+.settings-adv summary { font-family: var(--mono); font-size: 11px; letter-spacing: 0.5px; color: var(--ink-dim); cursor: pointer; margin-bottom: 14px; }
+.settings-adv summary:hover { color: var(--ink); }
+@media (max-width: 1080px) { .grid-settings { grid-template-columns: 1fr; } }
+
 /* ── Status line (signature telemetry bar) ───────────────── */
 .statusline {
   grid-area: status;
