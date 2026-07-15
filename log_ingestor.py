@@ -389,7 +389,7 @@ _REQ_RE = re.compile(
 
 def _clean_ip(ip: str) -> str:
     """Strip the IPv4-mapped-IPv6 `::ffff:` prefix Wazuh emits (e.g.
-    `::ffff:13.140.164.230` -> `13.140.164.230`)."""
+    `::ffff:203.0.113.10` -> `203.0.113.10`)."""
     ip = (ip or "").strip()
     if ip.lower().startswith("::ffff:"):
         ip = ip[7:]
