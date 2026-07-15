@@ -203,6 +203,18 @@ _SEED_MAX_LEVEL = 1
 _SEED_MAX_RISK = 1
 _SEED_MAX_ITERATIONS = 2
 
+# Isolated seeded targets (isolate_top — each carrying exactly ONE param in its own
+# clean request) get a DEEPER ceiling than the packed batch: engine.agent's own
+# detection ladder documents rung 1 (level=3/risk=2) as what actually "confirms
+# blind SQLi", vs. rung 0 (level=1/risk=1) being only a "fast baseline". Live-
+# evidenced against redsees.com: `/rest/products/search`'s `q` came back "clean" at
+# rung 0 even with a clean isolated request AND a realistic probe value (`apple`) —
+# the vulnerability is blind and genuinely needs rung 1 to confirm, not an
+# attribution problem isolate_top already fixed. The packed low-confidence batch
+# (many params, one broad sweep) stays at rung-0-only — cheap and bounded.
+_SEED_ISOLATED_MAX_LEVEL = 3
+_SEED_ISOLATED_MAX_RISK = 2
+
 # HARD ceiling on total injection targets (crawled + seeded) dispatched per scan,
 # regardless of mode/profile misconfiguration — the last line of defense against a
 # pathological target (e.g. a future "deep"-like profile with max_injection_targets
@@ -392,10 +404,13 @@ def _xss_candidate_summary(c) -> dict:
 
 def _scan_sqli_targets(crawled: list, seeded: list = None, *, scope_config,
                        profile: ScanProfile, scan_id: str) -> tuple:
-    """SQLi agent over crawled (full depth) + seeded (shallow) injection targets.
-    Returns (findings, candidate_summaries) — the summaries cover EVERY candidate
-    tested (clean/error included), for scan-record transparency (see
-    _sqli_candidate_summary)."""
+    """SQLi agent over crawled (full depth) + seeded injection targets. Seeded
+    targets are further split: ISOLATED (isolate_top — one param, one clean
+    request) get a deeper ceiling (_SEED_ISOLATED_MAX_*, ladder rung 1 — needed to
+    confirm a blind SQLi); the packed low-confidence BATCH stays at the shallow
+    rung-0-only ceiling (_SEED_MAX_*). Returns (findings, candidate_summaries) —
+    the summaries cover EVERY candidate tested (clean/error included), for
+    scan-record transparency (see _sqli_candidate_summary)."""
     findings: list = []
     candidates: list = []
     if crawled:
@@ -409,15 +424,23 @@ def _scan_sqli_targets(crawled: list, seeded: list = None, *, scope_config,
                      for c in result.candidates if c.status == "injectable"]
         candidates += [_sqli_candidate_summary(c) for c in result.candidates]
     if seeded:
-        result = run_sqli_agent(
-            list(seeded), scope_config=scope_config,
-            max_iterations=_SEED_MAX_ITERATIONS,
-            max_level=_SEED_MAX_LEVEL, max_risk=_SEED_MAX_RISK,
-            timeout_sec=profile.injection_timeout_sec)
-        tgt = getattr(seeded[0], "url", "") or ""
-        findings += [candidate_to_finding(c, target_url=tgt, scan_id=scan_id)
-                     for c in result.candidates if c.status == "injectable"]
-        candidates += [_sqli_candidate_summary(c) for c in result.candidates]
+        isolated = [t for t in seeded if len(t.param_names) == 1]
+        batched = [t for t in seeded if len(t.param_names) != 1]
+        for group, max_level, max_risk in (
+            (isolated, _SEED_ISOLATED_MAX_LEVEL, _SEED_ISOLATED_MAX_RISK),
+            (batched, _SEED_MAX_LEVEL, _SEED_MAX_RISK),
+        ):
+            if not group:
+                continue
+            result = run_sqli_agent(
+                list(group), scope_config=scope_config,
+                max_iterations=_SEED_MAX_ITERATIONS,
+                max_level=max_level, max_risk=max_risk,
+                timeout_sec=profile.injection_timeout_sec)
+            tgt = getattr(group[0], "url", "") or ""
+            findings += [candidate_to_finding(c, target_url=tgt, scan_id=scan_id)
+                         for c in result.candidates if c.status == "injectable"]
+            candidates += [_sqli_candidate_summary(c) for c in result.candidates]
     return findings, candidates
 
 

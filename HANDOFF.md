@@ -1,65 +1,55 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-15T11:35:00Z
-**Current milestone:** Blue Ops wired to REAL Wazuh alerts.json (JSONL) — ingest → events
-feed + threat levels → deterministic (no-LLM) blue incident report. UNCOMMITTED. Live-
-deployed (service restarted, port 80) and proven end-to-end against the real console.
+**Last updated:** 2026-07-15T13:10:00Z
+**Current milestone:** D-025/D-026 discovery→injection loop + param seeding — code is merged
+to `main` (via `feat/nuclei`), live-verified against the real target on the user's WSL2
+machine; a seed-path ranking bug found live has been fixed+pushed. One more live re-run
+needed to get a clean (non-resource-starved) confirmation on the `q` SQLi param.
 
 ## Next step
-Blue Ops / Wazuh-ingest task is COMPLETE and live-proven — commit it (see "Changed files").
-`.gitignore` already covers `outputs/*.html` (the earlier gap is closed), so `git add -A` is
-safe now w.r.t. report artifacts. After that: idor/auth agents (the last two static modules
-to convert to the agent-driven pattern).
+Have the user re-run `scripts/scan_root_verify.py` now that (a) the seed-ranking fix is
+pulled and (b) this server's memory pressure has been reduced (stale sessions killed — see
+"In progress"). Confirm the `q`/`search` params on `/rest/products/search` come back
+`injectable`, and that `/market` XSS is still reachable via discovery. If clean, D-025/D-026
+are fully done; if the sandbox self-test still intermittently fails, the box may need a
+bigger tier or Wazuh should be stopped during test windows.
 
 ## In progress
-nothing
+Killing stale processes on THIS server (vmi3362886) to relieve memory pressure (was 289MB
+free / load avg ~8, causing intermittent sandbox self-test failures + read-timeouts during
+the user's live scan — confirmed via `free -h`/`ps aux --sort=-%mem`: Wazuh indexer (~1.6GB)
++ 4-5 concurrent Claude Code sessions were the load, NOT the RedSee scan itself). User
+confirmed all extra sessions were theirs and safe to close. Killed (or attempted — the
+in-session safety classifier was intermittently unavailable mid-task, retry if still alive):
+PIDs 1740662 (pts/3 `claude -c`), 2006772 (pts/5 `claude -c`), 2007576/2007587 (bg job
+`ff9ff7a9`), 1526275 (orphaned `mem_monitor.log` bash loop, ~16h old, harmless but stale).
+**Next session: verify these are actually gone (`ps -p <pids>`) and re-check `free -h`
+before the next live scan attempt.**
 
 ## Recently completed (last 5)
-- Wazuh alerts.json → Blue Ops (ingest + feed + threat levels + deterministic blue report).
-  log_ingestor.py: `ingest_log_file(filepath, last_n=None, since_minutes=None)` — NEW
-  `_read_records()` handles JSONL (Wazuh's real shape, one alert/line, malformed lines
-  skipped) AND the old JSON-array/object fixtures; `last_n` tails the file (newest last),
-  `since_minutes` best-effort time-window. Enriched `_parse_wazuh_alerts`: rule.level→
-  severity_level (raw int), rule.description→description, data.srcip→src_ip (`::ffff:`
-  stripped), data.url OR request parsed from full_log→target_url, query-string/full_log +
-  `[MITRE: T…]` marker→raw_payload (frozen Event has no context field, so MITRE rides in the
-  free-form detail field). NEW helpers `severity_bucket()` (≥12 Crit/7–11 High/4–6 Med/<4
-  Low), `is_web_attack()` (31xxx or attack/web group). app.py `/analyze-logs`: accepts a
-  server-side `path` (default `/var/ossec/logs/alerts/alerts.json`) + `last_n`(500 default)/
-  `minutes`, OR an upload, OR inline events; `/generate-blue-report` now calls the
-  deterministic generator (always downloads a file). blue_report.py: NEW
-  `generate_deterministic_blue_report(events)` (incident summary, events-by-severity, MITRE
-  seen, top source IPs, web-attack section, all-events table) → reuses red_report._render_
-  report (weasyprint PDF if present, else self-contained HTML; no LLM). Frontend: "Load
-  alerts.json" button + web-attack row highlight (rule 31xxx) + WEB badge. 22 new offline
-  tests (real captured alert lines); schemas.py/engine untouched. LIVE proven: /analyze-logs
-  → 300 events, 10 web-attack, the /rest/products/search?q=<script>alert(1)</script> XSS
-  (rule 31106) present; blue report downloads a real 23KB file listing it — 2026-07-15
-- Skip legibility + Red Report export fix. DIAGNOSIS (confirmed against a real record,
-  `outputs/scan_0975e0a2.json`, before changing anything): sqli/xss "skipped" on a 502'd
-  target was CORRECT D-024 behavior (0 param-bearing endpoints -> nothing to inject), not a
-  bug — `session.get()` doesn't raise on an HTTP error status, so crawl silently drops an
-  unreachable root and returns 0 endpoints with no exception. The reason already existed in
-  `tools_run[].detail` but the UI only showed it as a hover tooltip. Fix (skip CONDITION
-  untouched): modules/scan.py builds a 3-way reason (no-params / target-unreachable /
-  target-responded-but-crawl-empty, using httpx's already-collected reachability signal,
-  zero new network calls); script.js shows `.detail` as a visible sub-line, not just a
-  tooltip. SEPARATE bug: `/scan/<id>/report` 400'd on 0-finding scans AND weasyprint was
-  confirmed missing in gunicorn's own venv AND `OPENROUTER_API_KEY` is empty — installing
-  weasyprint alone would NOT have fixed the button. Fix: red_report.py gained
-  `generate_deterministic_report()` — builds the same structured report from the scan record
-  via string templates (no LLM call), renders PDF if weasyprint is importable else
-  self-contained HTML (needs only the already-installed `markdown` pkg). app.py's route
-  prefers `scan_<id>.json`, never 400s on 0 findings, only 404s on a truly unknown id. Live-
-  proven end-to-end (unreachable-port scan -> legible skip reason; /market/* standard scan ->
-  6 real XSS + a real downloadable report; 0-finding scan -> real report, not 400; unknown id
-  -> clear 404). 11 new offline tests; schemas.py/engine/sandbox.py untouched — 2026-07-14
-- Param-targeted injection + scan modes + nuclei OOM fix (D-024, COMMITTED+PUSHED as 0b28c9e).
-  `engine/params.py` ranks/caps injectable targets; `run_scan(mode=fast|standard|deep)` drives
-  agents directly with per-mode depth; independent tools run concurrently. **nuclei "timeout"
-  was a 256 MB sandbox OOM** — fixed by scoping `-t` to memory-safe dirs. DECISIONS.md D-024.
-- Built `storage/scan_store.py` (COMMITTED) — SQLite queue/status/history over run_scan; gates
-  up front, bounded worker pool, orphaned rows reconcile to `error`. DECISIONS.md D-023 — 07-13
+- Fixed live-evidenced seed-path ranking bug (commit `69d31d7`, pushed to `feat/nuclei`):
+  `_QUERY_PATH_MARKERS` in `engine/params.py` mixed strong query-verb markers (search/query/
+  find/lookup/filter) with weak collection-noun markers (products/users/orders/list/fetch/
+  get) in one flat tier, so `/api/Products` and `/rest/products/search` tied and the
+  alphabetical fallback ("api" < "rest") picked the WRONG path under `seed_paths=1` — the
+  real target never got tested. Split into `_QUERY_PATH_MARKERS_STRONG`/`_WEAK` two-tier
+  ranking; added regression test reproducing the exact two-URL scenario. Live re-verified:
+  the user's next scan run correctly seeded `/rest/products/search` (not `/api/Products`).
+  Also fixed `scan_root_verify.py` to pretty-print (indent=2) instead of one long line —
+  the user's terminal had mangled a long single-line JSON dump on copy/paste.
+- Merged all of `feat/nuclei` into `main` and pushed (merge commit `61740b3`): D-025/D-026
+  discovery+seeding work, the Wazuh JSONL blue-team ingestion, live-verify script, README
+  rewrite. Clean merge, zero conflicts, frozen files (`schemas.py`/`engine/sandbox.py`)
+  verified untouched via `git diff --stat`.
+- README.md full rewrite reflecting real current state (agentic architecture, security
+  model, scan modes, blue team/SIEM ingestion, dual LLM/deterministic report pattern) —
+  replaced the old stale static-pipeline description.
+- Helped user stand up native Docker Engine inside WSL2 Ubuntu (their local test box) after
+  discovering Docker Desktop's split-VM architecture broke RedSee's host-iptables sandbox
+  isolation model (`DOCKER-USER` chain missing) — root cause, not just a symptom fix.
+- Wazuh alerts.json → Blue Ops (ingest + feed + threat levels + deterministic blue report,
+  now on `main`). See DECISIONS.md / git log for detail — this entry is intentionally
+  compressed to keep this file under the line budget.
 
 ## Key decisions
 - Blue: MITRE has no home in the frozen 8-field Event, so it rides in `raw_payload` as a
@@ -85,7 +75,11 @@ nothing
   files share the SAME bare scan_id.
 - D-024: nuclei's real failure was a 256 MB OOM (not a slow scan) — only found by running
   THROUGH the real sandbox (a raw `--network host` run looked fine and hid it).
-- Full decision history + rationale: DECISIONS.md D-012 through D-024.
+- Seed-path rank markers must be tiered (strong verb vs. weak noun), not one flat set — a
+  flat set lets a low-value path (`/api/Products`) tie a high-value one
+  (`/rest/products/search`) and lose only to alphabetical luck under a tight `seed_paths` cap.
+  Found via a LIVE run, not a test (all unit tests passed with the bug present).
+- Full decision history + rationale: DECISIONS.md D-012 through D-026.
 
 ## Open issues / blockers
 - This dev sandbox's .venv HAS `markdown` but NOT `weasyprint` (confirmed via gunicorn's own
@@ -117,29 +111,23 @@ nothing
   notfound?path=) to exercise injection.
 - Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming a
   target is up.
+- THIS server (vmi3362886, 8GB) runs the target's Docker sinks container, a native Juice
+  Shop Node process, the FULL Wazuh SIEM stack, AND whatever Claude Code sessions happen to
+  be open — free memory can drop to <300MB just from that idle baseline. Before a live scan,
+  check `free -h`/`ps aux --sort=-%mem` and close stale sessions first; a low-memory scan
+  failure (`isolation self-test FAILED`, `target_unreachable`) may be host contention, not a
+  RedSee bug — rule this out before chasing a code fix.
 
-## Changed files (this session — Wazuh alerts.json → Blue Ops; UNCOMMITTED)
-- log_ingestor.py — `ingest_log_file(filepath, last_n=None, since_minutes=None)`; NEW
-  `_read_records()` (JSONL + JSON-array/object), `_record_timestamp()`/`_filter_since()`,
-  `severity_bucket()`, `is_web_attack()`, `_clean_ip()`, `_url_from_full_log()`,
-  `_mitre_ids()`, `_compose_detail()`; `_parse_wazuh_alerts` enriched (full_log/mitre/IP).
-  `WAZUH_ALERTS_DEFAULT_PATH` const. Backward-compatible: old sample fixtures still parse.
-- blue_report.py — NEW `generate_deterministic_blue_report()` + section builders
-  (`_severity_table`/`_mitre_section`/`_top_source_ips`/`_events_table`/…); imports
-  `_render_report` from red_report. OLD LLM `generate_blue_report` UNTOUCHED.
-- app.py — `/analyze-logs` accepts server-side `path`(default Wazuh alerts.json)+`last_n`/
-  `minutes` OR upload OR inline events; `/generate-blue-report` → deterministic generator,
-  returns `{"report_url","format"}`. NEW `_INGEST_DEFAULT_LAST_N=500`.
-- templates/index.html — "Load alerts.json" ingest row (`#alertsBtn`/`#alertsLastN`).
-- static/script.js — `#alertsBtn` handler; `isWebAttack()`; web-attack row highlight + WEB
-  badge in `renderEvents`/`renderDist`.
-- static/style.css — `.web-badge`/`.events-table tr.web-attack`/`.dist-web`.
-- tests/test_blue_ingest.py (NEW, 22 tests) + tests/fixtures/wazuh_alerts_sample.jsonl (NEW,
-  real captured alert lines + a malformed line).
-- FROZEN, verified empty diff: `git diff --stat schemas.py engine/sandbox.py`.
-- Prior UNCOMMITTED work (skip legibility + red report fix: modules/scan.py, red_report.py,
-  app.py /scan report route, script.js, index.html, style.css, test_red_report_deterministic.py)
-  is ALSO still uncommitted — commit alongside or separately.
+## Changed files (this session)
+- engine/params.py — `_QUERY_PATH_MARKERS` split into `_STRONG`/`_WEAK` two-tier ranking
+  (see Key decisions). Committed+pushed `69d31d7` on `feat/nuclei`.
+- tests/test_param_seeding.py — regression test for the strong-vs-weak tie-break, same commit.
+- scripts/scan_root_verify.py — pretty-printed (indent=2) discovery/caps output + prints the
+  scan_<id>.json path up front, same commit.
+- HANDOFF.md — this update.
+- (Earlier this session, already committed to `main` via the `feat/nuclei` merge `61740b3`:
+  Wazuh alerts.json → Blue Ops, README rewrite, D-025/D-026 discovery+seeding — see git log,
+  not repeated here to stay within this file's line budget.)
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first
