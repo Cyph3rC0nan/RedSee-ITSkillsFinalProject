@@ -1,0 +1,30 @@
+<!--
+  ~ Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+  ~ SPDX-License-Identifier: MIT
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RedSees Marketplace</title>
+  <meta name="description" content="Field-grade gear for red-team operators. Recon to reporting, one supply depot.">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link id="favicon" rel="icon" type="image/x-icon" href="assets/public/redsees_favicon.ico">
+  <script>
+    window.addEventListener("load", function(){
+      window.cookieconsent.initialise({
+        "palette": {
+          "popup": { "background": "var(--theme-primary)", "text": "var(--theme-text)" },
+          "button": { "background": "var(--theme-accent)", "text": "var(--theme-text)" }
+        },
+        "theme": "classic",
+        "position": "bottom-right",
+        "content": { "message": "This depot logs requisitions to keep the manifest honest.", "dismiss": "Acknowledged.", "link": "Read the policy", "href": "https://www.youtube.com/watch?v=9PnbKL3wuH4" }
+      })});
+  </script>
+</head>
+<body class="neon-fire-theme">
+  <app-root></app-root>
+</body>
+</html>

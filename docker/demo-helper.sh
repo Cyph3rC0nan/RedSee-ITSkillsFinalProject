@@ -5,11 +5,17 @@
 #   start        - DVWA + Juice Shop + the RedSee Flask dashboard (blocking, foreground)
 #   dvwa         - DVWA only (detached), then prints the .env scope values + setup checklist
 #   juiceshop    - Juice Shop only (detached)
-#   marketplace  - RedSees Marketplace demo target: themed Juice Shop
-#                  (NODE_CONFIG_ENV=redsees, local checkout) + the demo-target/
-#                  reflected-XSS companion service on host networking, then prints
-#                  the .env scope values (see docs/redsees_marketplace_vulns.txt for
-#                  the ground-truth vuln map)
+#   marketplace  - RedSees Marketplace demo target: applies the cosmetic re-skin
+#                  (demo-target/apply-reskin.sh — SCSS/logo/font themepack +
+#                  frontend rebuild, skipped if already applied), starts the
+#                  themed Juice Shop (NODE_CONFIG_ENV=redsees, local checkout,
+#                  internal-only port) + the demo-target/ reflected-XSS companion
+#                  service (internal-only port), then starts demo-target/gateway/
+#                  — a reverse proxy that puts BOTH behind the single public
+#                  JUICE_PORT (/market/* -> sinks, everything else -> Juice
+#                  Shop), all on host networking, then prints the .env scope
+#                  values (see docs/redsees_marketplace_vulns.txt for the
+#                  ground-truth vuln map)
 #   stop         - stop + remove both demo containers
 #   status       - show running demo containers
 #
@@ -23,10 +29,23 @@
 #   JUICE_SHOP_DIR    - path to the local Juice Shop checkout used by `marketplace`
 #                       (default: /root/juice-shop) — must already be built
 #                       (node_modules/ + build/app.js present; `npm install && npm run build`)
-#   MARKETPLACE_PORT  - host port for the demo-target/ companion sink service
-#                       (default: 8081, host networking — NOT a published bridge port)
+#   JUICE_INTERNAL_PORT - INTERNAL port the themed Juice Shop process actually binds
+#                       for `marketplace` (default: 3001) — must match config/redsees.yml's
+#                       `server.port`. Not reachable directly as "the" app; demo-target/gateway/
+#                       fronts it on JUICE_PORT (see below).
+#   MARKETPLACE_PORT  - INTERNAL port for the demo-target/ companion sink service
+#                       (default: 8081, host networking — NOT a published bridge port).
+#                       Since the gateway was added, this is no longer the port you point
+#                       a scanner at — see JUICE_PORT / GATEWAY_PORT below.
 #   MARKETPLACE_HOST  - hostname to print in the .env guidance for `marketplace`
 #                       (default: redsees.com)
+#   GATEWAY_PORT      - PUBLIC port demo-target/gateway/ listens on for `marketplace`;
+#                       fronts both Juice Shop and the sink service on one port
+#                       (default: same value as JUICE_PORT, i.e. 3000)
+#   FORCE_RESKIN      - if "true", re-apply demo-target/apply-reskin.sh (themepack
+#                       copy + frontend rebuild) even if it looks already applied
+#                       (default: false — `marketplace` skips the rebuild when
+#                       frontend/src/assets/public/redsees_favicon.ico already exists)
 
 set -e
 
@@ -36,8 +55,11 @@ JUICE_PORT=${JUICE_PORT:-3000}
 DVWA_IMAGE=${DVWA_IMAGE:-vulnerables/web-dvwa}
 DVWA_HOST=${DVWA_HOST:-redsees.com}
 JUICE_SHOP_DIR=${JUICE_SHOP_DIR:-/root/juice-shop}
+JUICE_INTERNAL_PORT=${JUICE_INTERNAL_PORT:-3001}
 MARKETPLACE_PORT=${MARKETPLACE_PORT:-8081}
 MARKETPLACE_HOST=${MARKETPLACE_HOST:-redsees.com}
+FORCE_RESKIN=${FORCE_RESKIN:-false}
+GATEWAY_PORT=${GATEWAY_PORT:-$JUICE_PORT}
 DEMO_TARGET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/demo-target"
 
 RED='\033[0;31m'
@@ -102,12 +124,28 @@ _print_dvwa_scope() {
   echo ""
 }
 
+# Applies demo-target/apply-reskin.sh (SCSS/logo/font themepack copy + frontend
+# rebuild) unless it already looks applied. Deliberately skipped when Juice Shop
+# is already running (nothing to rebuild into) and skippable via FORCE_RESKIN=true
+# to force a reapply (e.g. after editing the themepack).
+_ensure_reskin_applied() {
+  local marker="${JUICE_SHOP_DIR}/frontend/src/assets/public/redsees_favicon.ico"
+  if [ "$FORCE_RESKIN" = "true" ] || [ ! -f "$marker" ]; then
+    echo -e "${BLUE}Applying RedSees Marketplace cosmetic re-skin (themepack + frontend rebuild)...${NC}"
+    JUICE_SHOP_DIR="${JUICE_SHOP_DIR}" bash "${DEMO_TARGET_DIR}/apply-reskin.sh"
+  else
+    echo "Re-skin already applied (found ${marker}) — skipping rebuild. Set FORCE_RESKIN=true to reapply."
+  fi
+}
+
 # Starts the local Juice Shop checkout (already built: node_modules/ + build/app.js)
 # as a themed background process with NODE_CONFIG_ENV=redsees, which activates
 # config/redsees.yml ("RedSees Marketplace" branding + catalog) inside that repo.
-# Runs as a host process, not a container — bkimminich/juice-shop (used by
-# `juiceshop`/`start`) is the stock public image and does not contain this repo's
-# config/redsees.yml overlay.
+# Binds JUICE_INTERNAL_PORT (config/redsees.yml's server.port), NOT the public
+# JUICE_PORT — demo-target/gateway/ fronts it on JUICE_PORT so it can share that
+# port with the sink service. Runs as a host process, not a container —
+# bkimminich/juice-shop (used by `juiceshop`/`start`) is the stock public image
+# and does not contain this repo's config/redsees.yml overlay or the frontend re-skin.
 _start_marketplace_juiceshop() {
   echo -e "${BLUE}Starting themed Juice Shop (RedSees Marketplace)...${NC}"
   if [ ! -f "${JUICE_SHOP_DIR}/build/app.js" ]; then
@@ -115,19 +153,21 @@ _start_marketplace_juiceshop() {
     echo "  Set JUICE_SHOP_DIR to your checkout (must be built: npm install && npm run build)."
     return 1
   fi
-  if curl -s -o /dev/null -w '%{http_code}' "http://localhost:${JUICE_PORT}/" 2>/dev/null | grep -qE '200|304'; then
-    echo "Juice Shop already running on :${JUICE_PORT}"
+  if curl -s -o /dev/null -w '%{http_code}' "http://localhost:${JUICE_INTERNAL_PORT}/" 2>/dev/null | grep -qE '200|304'; then
+    echo "Juice Shop already running on internal :${JUICE_INTERNAL_PORT}"
   else
+    _ensure_reskin_applied
     (cd "${JUICE_SHOP_DIR}" && NODE_CONFIG_ENV=redsees nohup node build/app.js \
       > /tmp/redsees-juiceshop.log 2>&1 & echo $! > /tmp/redsees-juiceshop.pid)
     sleep 2
-    echo "Themed Juice Shop starting on :${JUICE_PORT} (logs: /tmp/redsees-juiceshop.log)"
+    echo "Themed Juice Shop starting on internal :${JUICE_INTERNAL_PORT} (logs: /tmp/redsees-juiceshop.log)"
   fi
 }
 
 # Builds + starts the demo-target/ reflected-XSS companion service with HOST
 # networking (--network host), never a published bridge port — a published/DNAT'd
-# port is the sandbox-reachability blocker documented in HANDOFF.md.
+# port is the sandbox-reachability blocker documented in HANDOFF.md. Binds
+# MARKETPLACE_PORT internally; demo-target/gateway/ fronts it on JUICE_PORT.
 _start_marketplace_sinks() {
   echo -e "${BLUE}Starting RedSees Marketplace companion sink service...${NC}"
   MARKETPLACE_PORT=${MARKETPLACE_PORT} docker build -t redsee-marketplace-sinks "${DEMO_TARGET_DIR}" >/dev/null
@@ -141,20 +181,40 @@ _start_marketplace_sinks() {
     echo "Marketplace sink service already running"
 }
 
+# Builds + starts demo-target/gateway/, the reverse proxy that puts Juice Shop
+# and the sink service behind ONE public port (GATEWAY_PORT, same value as
+# JUICE_PORT by default): /market/* -> the sink service, everything else ->
+# Juice Shop. HOST networking, same reasoning as the sink service.
+_start_marketplace_gateway() {
+  echo -e "${BLUE}Starting RedSees Marketplace gateway (unified port ${GATEWAY_PORT})...${NC}"
+  docker build -t redsee-marketplace-gateway "${DEMO_TARGET_DIR}/gateway" >/dev/null
+  docker run -d \
+    --name redsee-marketplace-gateway \
+    --restart unless-stopped \
+    --network host \
+    -e GATEWAY_PORT=${GATEWAY_PORT} \
+    -e JUICE_SHOP_TARGET="http://127.0.0.1:${JUICE_INTERNAL_PORT}" \
+    -e MARKETPLACE_SINKS_TARGET="http://127.0.0.1:${MARKETPLACE_PORT}" \
+    redsee-marketplace-gateway 2>/dev/null || \
+    docker start redsee-marketplace-gateway 2>/dev/null || \
+    echo "Marketplace gateway already running"
+}
+
 _print_marketplace_scope() {
   echo ""
   echo -e "${GREEN}✅ RedSees Marketplace started:${NC}"
-  echo "  Themed Juice Shop: http://localhost:${JUICE_PORT}"
-  echo "  Companion sinks:   http://localhost:${MARKETPLACE_PORT}/market/"
+  echo "  Unified entry point: http://localhost:${GATEWAY_PORT}/         (Juice Shop storefront)"
+  echo "                       http://localhost:${GATEWAY_PORT}/market/  (companion sinks, same port)"
+  echo "  (internal-only — not meant to be hit directly: Juice Shop :${JUICE_INTERNAL_PORT}, sinks :${MARKETPLACE_PORT})"
   echo ""
   echo -e "${YELLOW}Add to .env for a RedSees Marketplace scan:${NC}"
-  echo "  REDSEE_TARGET_URL=http://${MARKETPLACE_HOST}:${MARKETPLACE_PORT}/market/"
+  echo "  REDSEE_TARGET_URL=http://${MARKETPLACE_HOST}:${GATEWAY_PORT}/market/"
   echo "  REDSEE_ALLOWED_HOSTS=${MARKETPLACE_HOST}"
   echo ""
   echo "  Ground-truth vuln map: docs/redsees_marketplace_vulns.txt"
   echo ""
   echo -e "${YELLOW}Reachability check:${NC}"
-  echo "  curl -s 'http://${MARKETPLACE_HOST}:${MARKETPLACE_PORT}/market/search?q=<b>PWN</b>' | grep '<b>PWN</b>'"
+  echo "  curl -s 'http://${MARKETPLACE_HOST}:${GATEWAY_PORT}/market/search?q=<b>PWN</b>' | grep '<b>PWN</b>'"
   echo ""
 }
 
@@ -197,6 +257,7 @@ case "$ACTION" in
     echo "================================"
     _start_marketplace_juiceshop
     _start_marketplace_sinks
+    _start_marketplace_gateway
     _print_marketplace_scope
     ;;
 
@@ -204,8 +265,8 @@ case "$ACTION" in
     echo "Stopping RedSee demo containers..."
     docker stop redsee-dvwa redsee-juiceshop 2>/dev/null || true
     docker rm redsee-dvwa redsee-juiceshop 2>/dev/null || true
-    docker stop redsee-marketplace-sinks 2>/dev/null || true
-    docker rm redsee-marketplace-sinks 2>/dev/null || true
+    docker stop redsee-marketplace-sinks redsee-marketplace-gateway 2>/dev/null || true
+    docker rm redsee-marketplace-sinks redsee-marketplace-gateway 2>/dev/null || true
     if [ -f /tmp/redsees-juiceshop.pid ]; then
       kill "$(cat /tmp/redsees-juiceshop.pid)" 2>/dev/null || true
       rm -f /tmp/redsees-juiceshop.pid

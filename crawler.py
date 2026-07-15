@@ -39,8 +39,21 @@ SKIP_PATHS = {
     "/phpinfo.php", "/server-status"
 }
 
-# JS API endpoint discovery regex
-JS_API_PATTERN = re.compile(r"""['"` ](/(?:api|rest|v[12])/[a-zA-Z0-9/_\-{}]+)['"` ]""")
+# JS API endpoint discovery regex. Matches an absolute /api|/rest|/v1|/v2 path
+# embedded in a JS string. The DELIMITERS are deliberately broad because modern
+# SPAs (Angular/React) build request URLs from TEMPLATE LITERALS, e.g.
+# `${this.hostServer}/rest/products/search?q=${q}` — there the path is preceded by
+# `}` (end of a ${...} interpolation), not a quote, and followed by `?` (a query
+# string), not a closing quote. The original pattern required a quote/space on BOTH
+# sides, so it silently dropped every interpolated or query-bearing API path
+# (e.g. it caught /rest/products but missed /rest/products/search — the very
+# endpoint that carries the injectable `q`). Leading class now also allows `}`/`)`
+# (interpolation / expression boundary); the trailing delimiter is a LOOKAHEAD
+# (not consumed) that also accepts `?`/`#`/`&` so a query string ends the path
+# cleanly. The captured group is still just the PATH (query stripped); callers add
+# params. `{...}` route placeholders inside the path are normalized to "1" below.
+JS_API_PATTERN = re.compile(
+    r"""['"`}) ](/(?:api|rest|v[12])/[a-zA-Z0-9/_\-{}]+)(?=['"`?#&) ]|$)""")
 
 
 # --- Internal Helpers ---
@@ -279,13 +292,19 @@ def _deduplicate_endpoints(endpoints: list[Endpoint]) -> list[Endpoint]:
 
 # --- Main Crawl Function ---
 
-def crawl(target_url: str, auth_type: str = "auto") -> Sitemap:
+def crawl(target_url: str, auth_type: str = "auto",
+          max_pages: int = MAX_PAGES, max_depth: int = MAX_DEPTH) -> Sitemap:
     """
     Crawl a target web application and discover all endpoints.
 
     Args:
         target_url: Base URL of the target application.
         auth_type: "auto" (detect), "dvwa", "juiceshop", or "none".
+        max_pages: Cap on pages fetched (default MAX_PAGES). A small value gives a
+                   BOUNDED crawl — used when re-crawling an ffuf-discovered path just
+                   to surface its immediate links/forms/params, not to walk the whole
+                   app again.
+        max_depth: BFS depth cap (default MAX_DEPTH). Small value = shallow crawl.
 
     Returns:
         Sitemap object containing all discovered endpoints and metadata.
@@ -321,7 +340,7 @@ def crawl(target_url: str, auth_type: str = "auto") -> Sitemap:
     visited: set[str] = set()
     all_endpoints: list[Endpoint] = []
 
-    while queue and len(visited) < MAX_PAGES:
+    while queue and len(visited) < max_pages:
         url, depth = queue.popleft()
 
         # Normalize
@@ -330,7 +349,7 @@ def crawl(target_url: str, auth_type: str = "auto") -> Sitemap:
         # Skip conditions
         if normalized in visited:
             continue
-        if depth > MAX_DEPTH:
+        if depth > max_depth:
             continue
         if not session.is_same_origin(url):
             continue

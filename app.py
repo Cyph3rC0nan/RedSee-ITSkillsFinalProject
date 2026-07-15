@@ -26,22 +26,66 @@ load_env()
 import os
 import json
 import uuid
+import secrets
 import threading
 import tempfile
 from pathlib import Path
-from flask import Flask, request, jsonify, send_file, render_template
+from urllib.parse import urlparse
+from flask import Flask, request, jsonify, send_file, render_template, Response
 from flask_cors import CORS
 
-from integration import run_full_scan, get_scan_status, _scan_status
-from red_report import generate_red_report
-from blue_report import generate_blue_report
 from log_ingestor import ingest_log_file, fetch_wazuh_alerts
+
+# Spine: persistent scan store (queue + status + history) over the unified
+# orchestrator (modules.scan.run_scan). The dashboard's RED OPS view drives
+# this; scope is authorized per-scan from the operator's attestation in the UI.
+from storage import scan_store
+from engine.scope import ScopeConfig, ScopeError
+
+# PDF report generation (red/blue) and the legacy integration pipeline depend on
+# weasyprint/markdown, which need system libraries that may be absent in a given
+# environment. They are LEAF features — the console (spine-backed scans + SIEM
+# ingest) must boot without them, so import lazily/gracefully and degrade the
+# specific routes that need them rather than failing the whole app.
+try:
+    from integration import run_full_scan, get_scan_status, _scan_status
+    _HAS_INTEGRATION = True
+except Exception as _exc:                     # noqa: BLE001 - optional pipeline
+    _HAS_INTEGRATION = False
+    _INTEGRATION_ERR = str(_exc)
 
 app = Flask(__name__)
 CORS(app)
 
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(exist_ok=True)
+
+# ─── HTTP Basic Auth gate ──────────────────────────────────
+# The console is a pentest control surface; when exposed on a network it must not
+# be open. Credentials come from the environment (REDSEE_DASH_USER / _PASS, loaded
+# from .env). Auth is enforced whenever a password is configured; if none is set
+# (local dev), the gate is a no-op so the app still runs without credentials.
+_DASH_USER = os.environ.get("REDSEE_DASH_USER", "admin")
+_DASH_PASS = os.environ.get("REDSEE_DASH_PASS", "")
+
+
+@app.before_request
+def _require_basic_auth():
+    if not _DASH_PASS:
+        return None                       # no password configured → auth disabled (dev)
+    auth = request.authorization
+    ok = (
+        auth is not None
+        and (auth.type or "").lower() == "basic"
+        and secrets.compare_digest(auth.username or "", _DASH_USER)
+        and secrets.compare_digest(auth.password or "", _DASH_PASS)
+    )
+    if ok:
+        return None
+    return Response(
+        "RedSee console — authentication required.",
+        401, {"WWW-Authenticate": 'Basic realm="RedSee Security Operations Console"'},
+    )
 
 # In-memory state stores (no DB needed for prototype)
 scans = {}           # scan_id → {status, findings, target_url, ...}
@@ -64,6 +108,9 @@ def start_scan():
     data = request.get_json()
     if not data or not data.get("target_url", "").strip():
         return jsonify({"error": "target_url is required"}), 400
+
+    if not _HAS_INTEGRATION:
+        return jsonify({"error": "The legacy scan pipeline is unavailable here. Use the RED OPS console (POST /api/scans)."}), 503
 
     target_url = data["target_url"].strip()
     scan_id = str(uuid.uuid4())[:8]
@@ -88,6 +135,60 @@ def start_scan():
     return jsonify({"scan_id": scan_id, "status": "in_progress"})
 
 
+# ─── SPINE API: persistent scan queue / status / history ───
+# The RED OPS dashboard runs on these (storage.scan_store over modules.scan.run_scan),
+# not the legacy /scan route above. Authorization is attested per-scan in the UI and
+# enforced by engine.scope BEFORE anything is queued — an unauthorized target is refused.
+
+@app.route("/api/scans", methods=["POST"])
+def api_create_scan():
+    """Body: { "target_url": "http://host:port/", "authorized": true, "mode": "standard" }
+    Returns: { "scan_id": "...", "status": "queued", "mode": "..." } — 403 if not authorized/in scope."""
+    data = request.get_json(silent=True) or {}
+    target_url = (data.get("target_url") or "").strip()
+    authorized = bool(data.get("authorized"))
+    # Scan mode tunes breadth/depth/recon; an unknown value degrades to standard
+    # inside the orchestrator, so accept it here and let the spine normalize.
+    mode = (data.get("mode") or "standard").strip().lower()
+    if mode not in ("fast", "standard", "deep"):
+        mode = "standard"
+    if not target_url:
+        return jsonify({"error": "A target URL is required."}), 400
+
+    host = urlparse(target_url).hostname
+    if not host:
+        return jsonify({"error": "Could not read a host from that URL. Include the scheme, e.g. http://host:3000/"}), 400
+
+    # The operator's authorization attestation + the target's own host become the
+    # scope for this scan (allow-list of exactly one host). enqueue_scan gates on it.
+    scope = ScopeConfig(target_url=target_url, allowed_hosts=[host], authorized=authorized)
+    try:
+        scan_id = scan_store.enqueue_scan(target_url, scope_config=scope, mode=mode)
+    except ScopeError as exc:
+        return jsonify({"error": str(exc)}), 403
+    return jsonify({"scan_id": scan_id, "status": "queued", "mode": mode}), 201
+
+
+@app.route("/api/scans")
+def api_list_scans():
+    """Returns: { "scans": [ ...summary rows, newest first... ] }"""
+    try:
+        limit = min(200, max(1, int(request.args.get("limit", 50))))
+    except (TypeError, ValueError):
+        limit = 50
+    status = request.args.get("status") or None
+    return jsonify({"scans": scan_store.list_scans(limit=limit, status=status)})
+
+
+@app.route("/api/scans/<scan_id>")
+def api_get_scan(scan_id):
+    """Returns the summary row + the full scan_<id>.json record under "scan"."""
+    row = scan_store.get_scan(scan_id)
+    if row is None:
+        return jsonify({"error": "Scan not found"}), 404
+    return jsonify(row)
+
+
 # ─── ROUTE: Scan Status ────────────────────────────────────
 @app.route("/scan/<scan_id>/status")
 def scan_status(scan_id):
@@ -100,6 +201,8 @@ def scan_status(scan_id):
 
     Reads live status from integration._scan_status via get_scan_status().
     """
+    if not _HAS_INTEGRATION:
+        return jsonify({"error": "Legacy scan status is unavailable here. Use GET /api/scans/<id>."}), 503
     status_data = get_scan_status(scan_id)
     if status_data.get("status") == "not_found":
         return jsonify({"error": "Scan not found"}), 404
@@ -137,32 +240,48 @@ def scan_findings(scan_id):
 # ─── ROUTE: Generate Red Team Report ──────────────────────
 @app.route("/scan/<scan_id>/report", methods=["POST"])
 def generate_report(scan_id):
-    """Returns: { "report_url": "/downloads/red_report_<scan_id>.pdf" }
+    """Returns: { "report_url": "/downloads/red_report_<scan_id>.<ext>", "format": "pdf"|"html" }
 
-    Reads findings from outputs/findings_{scan_id}.json and calls
-    red_report.generate_red_report() to produce the PDF.
+    Prefers the unified outputs/scan_{scan_id}.json (D-024 — full target/mode/
+    tools_run/recon context), falling back to the legacy outputs/findings_{scan_id}
+    .json (bare findings array, e.g. from a standalone modules/sqli.py run) and
+    then the in-memory cache, so any known scan_id can still get a report.
+
+    Uses red_report.generate_deterministic_report — evidence-derived, NOT an LLM
+    call — so this route needs neither weasyprint nor an LLM API key to succeed:
+    it renders a PDF when weasyprint happens to be installed, else a self-
+    contained HTML report. A scan with 0 findings still gets a real report (a
+    clean result is a legitimate deliverable); only a scan with NO data at all
+    (never ran / unknown id) is refused, with a clear reason — never a dead click.
     """
+    scan_json_path = OUTPUTS_DIR / f"scan_{scan_id}.json"
     findings_path = OUTPUTS_DIR / f"findings_{scan_id}.json"
-    findings: list[dict] = []
 
-    if findings_path.exists():
+    record: dict | None = None
+    if scan_json_path.exists():
+        with open(scan_json_path, "r", encoding="utf-8") as f:
+            record = json.load(f)
+    elif findings_path.exists():
         with open(findings_path, "r", encoding="utf-8") as f:
-            findings = json.load(f)
+            record = {"scan_id": scan_id, "findings": json.load(f)}
     else:
-        # Fallback to in-memory cache
+        # Fallback to in-memory cache (legacy /scan pipeline's own findings, if any).
         scan = scans.get(scan_id)
-        if scan is not None:
-            findings = scan.get("findings", [])
+        if scan is not None and scan.get("findings"):
+            record = {"scan_id": scan_id, "findings": scan.get("findings")}
 
-    if not findings:
-        return jsonify({"error": "No findings available for this scan"}), 400
+    if record is None:
+        return jsonify({"error": f"No scan data found for '{scan_id}' — it may "
+                        "still be queued/running, or the id is unknown."}), 404
 
     try:
-        report_path = generate_red_report(findings, scan_id=scan_id)
-        filename = Path(report_path).name
-        return jsonify({"report_url": f"/downloads/{filename}"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        from red_report import generate_deterministic_report   # lazy: only needs markdown (always present)
+        report_path, fmt = generate_deterministic_report(record, scan_id=scan_id)
+    except Exception as e:                            # noqa: BLE001 - never let this 500 opaquely
+        return jsonify({"error": f"Report generation failed: {e}"}), 500
+
+    filename = Path(report_path).name
+    return jsonify({"report_url": f"/downloads/{filename}", "format": fmt})
 
 # ─── ROUTE: Upload & Analyze SIEM Logs ────────────────────
 @app.route("/analyze-logs", methods=["POST"])
@@ -289,6 +408,11 @@ def generate_blue_report_route():
             analysis_id = str(uuid.uuid4())[:8]
         else:
             return jsonify({"error": "No events data provided"}), 400
+
+        try:
+            from blue_report import generate_blue_report   # lazy: needs weasyprint/markdown
+        except Exception as imp_err:                        # noqa: BLE001
+            return jsonify({"error": f"PDF generation is unavailable in this environment: {imp_err}"}), 503
 
         try:
             report_path = generate_blue_report(events, report_id=analysis_id)

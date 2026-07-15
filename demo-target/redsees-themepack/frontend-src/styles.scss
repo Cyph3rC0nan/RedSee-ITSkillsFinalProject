@@ -1,0 +1,853 @@
+/*!
+ * Copyright (c) 2014-2026 Bjoern Kimminich & the OWASP Juice Shop contributors.
+ * SPDX-License-Identifier: MIT
+ */
+@use '@angular/material' as mat;
+
+@use 'sass:color';
+
+@use './styles/theme' as *;
+@use './styles/variables' as *;
+
+@use './hacking-instructor/hacking-instructor.scss';
+
+// RedSees Marketplace re-skin: self-hosted display/body fonts (no runtime CDN —
+// static files under assets/public/fonts, copied by Angular's asset pipeline).
+@font-face {
+  font-family: 'RedSees Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('assets/public/fonts/jetbrainsmono-500.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'RedSees Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('assets/public/fonts/jetbrainsmono-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'RedSees Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('assets/public/fonts/ibmplexsans-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'RedSees Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('assets/public/fonts/ibmplexsans-500.woff2') format('woff2');
+}
+
+@mixin link-theme($theme) {
+  a:link,
+  a:visited {
+    color: mat.get-theme-color($theme, tertiary);
+    text-decoration: none;
+  }
+
+  a:hover,
+  a:focus,
+  a:active {
+    text-decoration: underline;
+  }
+
+  a {
+    outline: none;
+  }
+}
+
+@mixin deluxe-membership-theme($theme) {
+  .deluxe-membership {
+    background: linear-gradient(90deg, mat.get-theme-color($theme, primary, 10) 0%, mat.get-theme-color($theme, surface-container) 100%);
+  }
+}
+
+@mixin notification-theme($theme) {
+  .confirmation {
+    color: mat.get-theme-color($theme, tertiary);
+  }
+
+  .error {
+    color: mat.get-theme-color($theme, error);
+  }
+
+  .primary-notification {
+    background-color: mat.get-theme-color($theme, primary, 30) !important;
+    color: #fff !important;
+
+    button,
+    mat-icon {
+      color: inherit !important;
+    }
+  }
+
+  .accent-notification {
+    background-color: mat.get-theme-color($theme, tertiary, 30) !important;
+    color: #fff !important;
+
+    button,
+    mat-icon {
+      color: inherit !important;
+    }
+  }
+
+  .warn-notification {
+    background-color: mat.get-theme-color($theme, error, 30) !important;
+    color: #fff !important;
+
+    button,
+    mat-icon {
+      color: inherit !important;
+    }
+  }
+}
+
+@mixin image-thumbnail-theme($theme) {
+  .img-thumbnail {
+    border-radius: 3px;
+  }
+}
+
+@mixin score-star-theme($theme) {
+  .empty-star {
+    stop-color: mat.get-theme-color($theme, primary);
+  }
+
+  .filled-star {
+    stop-color: mat.get-theme-color($theme, tertiary);
+  }
+
+  .star-border {
+    stroke: mat.get-theme-color($theme, tertiary);
+  }
+}
+
+// sets css variables to be used across components during runtime
+@mixin css-vars($theme) {
+  $primary-base: mat.get-theme-color($theme, primary, 60);
+  --theme-primary: #{$primary-base};
+  --theme-primary-lighter: #{color.adjust($primary-base, $lightness: 6%)};
+  --theme-primary-light: #{color.adjust($primary-base, $lightness: 10%)};
+  --theme-primary-darker: #{color.adjust($primary-base, $lightness: -6%)};
+  --theme-primary-dark: #{color.adjust($primary-base, $lightness: -10%)};
+  --theme-primary-fade-10: #{color.adjust($primary-base, $alpha: 0.1)};
+  --theme-primary-fade-20: #{color.adjust($primary-base, $alpha: 0.2)};
+  --theme-primary-fade-30: #{color.adjust($primary-base, $alpha: 0.3)};
+  --theme-primary-fade-40: #{color.adjust($primary-base, $alpha: 0.4)};
+  --theme-primary-fade-50: #{color.adjust($primary-base, $alpha: 0.5)};
+
+  $accent-base: mat.get-theme-color($theme, tertiary, 60);
+  --theme-accent: #{$accent-base};
+  --theme-accent-lighter: #{color.adjust($accent-base, $lightness: 6%)};
+  --theme-accent-light: #{color.adjust($accent-base, $lightness: 10%)};
+  --theme-accent-darker: #{color.adjust($accent-base, $lightness: -6%)};
+  --theme-accent-dark: #{color.adjust($accent-base, $lightness: -10%)};
+  --theme-accent-fade-10: #{color.adjust($accent-base, $alpha: 0.1)};
+  --theme-accent-fade-20: #{color.adjust($accent-base, $alpha: 0.2)};
+  --theme-accent-fade-30: #{color.adjust($accent-base, $alpha: 0.3)};
+  --theme-accent-fade-40: #{color.adjust($accent-base, $alpha: 0.4)};
+  --theme-accent-fade-50: #{color.adjust($accent-base, $alpha: 0.5)};
+
+  --theme-warn: #{mat.get-theme-color($theme, error)};
+  --theme-warn-lighter: #{color.adjust(mat.get-theme-color($theme, error), $lightness: 6%)};
+  --theme-warn-light: #{color.adjust(mat.get-theme-color($theme, error), $lightness: 10%)};
+  --theme-warn-darker: #{color.adjust(mat.get-theme-color($theme, error), $lightness: -6%)};
+  --theme-warn-dark: #{color.adjust(mat.get-theme-color($theme, error), $lightness: -10%)};
+  --theme-warn-fade-10: #{color.adjust(mat.get-theme-color($theme, error), $alpha: 0.1)};
+  --theme-warn-fade-20: #{color.adjust(mat.get-theme-color($theme, error), $alpha: 0.2)};
+  --theme-warn-fade-30: #{color.adjust(mat.get-theme-color($theme, error), $alpha: 0.3)};
+  --theme-warn-fade-40: #{color.adjust(mat.get-theme-color($theme, error), $alpha: 0.4)};
+  --theme-warn-fade-50: #{color.adjust(mat.get-theme-color($theme, error), $alpha: 0.5)};
+
+  --theme-text: #{mat.get-theme-color($theme, on-surface)};
+  --theme-text-lighter: #{color.adjust(mat.get-theme-color($theme, on-surface), $lightness: 6%)};
+  --theme-text-light: #{color.adjust(mat.get-theme-color($theme, on-surface), $lightness: 10%)};
+  --theme-text-darker: #{color.adjust(mat.get-theme-color($theme, on-surface), $lightness: -10%)};
+  --theme-text-dark: #{color.adjust(mat.get-theme-color($theme, on-surface), $lightness: -25%)};
+  --theme-text-fade-10: #{color.adjust(mat.get-theme-color($theme, on-surface), $alpha: 0.1)};
+  --theme-text-fade-20: #{color.adjust(mat.get-theme-color($theme, on-surface), $alpha: 0.2)};
+  --theme-text-fade-30: #{color.adjust(mat.get-theme-color($theme, on-surface), $alpha: 0.3)};
+  --theme-text-fade-40: #{color.adjust(mat.get-theme-color($theme, on-surface), $alpha: 0.4)};
+  --theme-text-fade-50: #{color.adjust(mat.get-theme-color($theme, on-surface), $alpha: 0.5)};
+
+  --theme-text-invert-15: #{color.invert(mat.get-theme-color($theme, on-surface), 15%)};
+  --theme-text-invert-30: #{color.invert(mat.get-theme-color($theme, on-surface), 30%)};
+
+  --theme-background: #{mat.get-theme-color($theme, surface-container)};
+  --theme-background-lighter: #{color.adjust(mat.get-theme-color($theme, surface-container), $lightness: 6%)};
+  --theme-background-light: #{color.adjust(mat.get-theme-color($theme, surface-container), $lightness: 10%)};
+  --theme-background-darker: #{color.adjust(mat.get-theme-color($theme, surface-container), $lightness: -6%)};
+  --theme-background-dark: #{color.adjust(mat.get-theme-color($theme, surface-container), $lightness: -10%)};
+  --theme-background-darkest: #{color.adjust(mat.get-theme-color($theme, surface-container), $lightness: -14%)};
+
+  --theme-thumbnail-border: 1px solid #{mat.get-theme-color($theme, primary)};
+
+  // make background of search field transparent
+  --mdc-filled-text-field-container-color: #0000;
+  --mdc-filled-text-field-disabled-container-color: #0000;
+}
+
+@mixin snackbar($theme) {
+  .mat-mdc-snack-bar-container {
+    --mdc-snackbar-container-color: var(--theme-background-lighter);
+    --mdc-snackbar-supporting-text-color: var(--theme-text);
+  }
+
+  .mat-mdc-snack-bar-container.errorBar {
+    --mdc-snackbar-supporting-text-color: var(--theme-warn);
+  }
+
+  .mat-mdc-snack-bar-container.confirmBar {
+    --mdc-snackbar-supporting-text-color: var(--theme-accent);
+  }
+}
+
+
+@mixin google-button($theme) {
+  .google-button {
+    background-color: mat.get-theme-color($theme, tertiary, 30) !important;
+  }
+}
+
+@mixin overlay-theme($theme) {
+  .overlay {
+    background: color.adjust(mat.get-theme-color($theme, primary, 30), $alpha: -0.3);
+  }
+}
+
+@mixin custom-components-theme($theme) {
+  @include link-theme($theme);
+  @include notification-theme($theme);
+  @include image-thumbnail-theme($theme);
+  @include score-star-theme($theme);
+  @include snackbar($theme);
+  @include google-button($theme);
+  @include deluxe-membership-theme($theme);
+  @include overlay-theme($theme);
+}
+
+@mixin theme-overrides($nav, $bg, $prim, $text) {
+  $is-dark: color.channel($bg, 'lightness', $space: hsl) < 50%;
+  $is-text-light: color.channel($text, 'lightness', $space: hsl) > 50%;
+
+  // Overriding project-specific background/surface variables
+  --theme-background: #{$prim};
+  --theme-background-lighter: #{color.adjust($prim, $lightness: if(sass($is-dark): 5%; else: -5%))};
+  --theme-background-light: #{color.adjust($prim, $lightness: if(sass($is-dark): 10%; else: -10%))};
+  --theme-background-darker: #{$bg};
+  --theme-background-dark: #{color.adjust($bg, $lightness: if(sass($is-dark): -5%; else: 5%))};
+  --theme-background-darkest: #{color.adjust($bg, $lightness: -10%)};
+
+  // Overriding project-specific text variables
+  --theme-text: #{$text};
+  --theme-text-lighter: #{color.adjust($text, $lightness: if(sass($is-text-light): 5%; else: -5%))};
+  --theme-text-light: #{if(sass($is-text-light): #fff; else: #000)};
+  --theme-text-darker: #{color.adjust($text, $lightness: if(sass($is-text-light): -10%; else: 10%))};
+  --theme-text-dark: #{color.adjust($text, $lightness: if(sass($is-text-light): -25%; else: 25%))};
+
+  // Explicit Material M3 System tokens
+  --mat-sys-surface: #{$bg};
+  --mat-sys-on-surface: #{$text};
+  --mat-sys-surface-container: #{$prim};
+  --mat-sys-surface-container-high: #{color.adjust($prim, $lightness: if(sass($is-dark): 2%; else: -2%))};
+  --mat-sys-on-surface-variant: #{color.adjust($text, $lightness: if(sass($is-text-light): -25%; else: 25%))};
+  --mat-sys-outline: #{color.adjust($bg, $lightness: if(sass($is-dark): 20%; else: -20%))};
+  --mat-sys-outline-variant: #{color.adjust($bg, $lightness: if(sass($is-dark): 10%; else: -10%))};
+
+  // Component-specific alignment
+
+  // Top app bar / Toolbar (mat-toolbar)
+  .mat-mdc-toolbar,
+  mat-toolbar {
+    --mat-toolbar-container-background-color: #{$nav};
+    --mat-toolbar-container-text-color: #{if(sass(color.channel($nav, 'lightness', $space: hsl) > 60%): #000; else: #fff)};
+    color: var(--mat-toolbar-container-text-color);
+  }
+
+  // Cards / Tiles / Panels
+  $border-color: if(sass($is-dark): rgba(255, 255, 255, 0.1); else: rgba(0, 0, 0, 0.1));
+
+  .mat-mdc-card,
+  .mat-expansion-panel {
+    --mdc-elevated-card-container-color: #{$prim};
+    background-color: var(--mdc-elevated-card-container-color);
+    border: 1px solid #{$border-color};
+  }
+
+  // Dialogs
+  .mat-mdc-dialog-container .mdc-dialog__surface {
+    --mdc-dialog-container-color: #{color.adjust($prim, $lightness: 1%)};
+    background-color: var(--mdc-dialog-container-color);
+    border: 1px solid #{$border-color};
+  }
+
+  // Form Fields
+  .mat-mdc-form-field {
+    --mdc-filled-text-field-container-color: #{color.adjust($prim, $lightness: 5%)};
+    --mdc-outlined-text-field-container-color: #{color.adjust($prim, $lightness: 5%)};
+    --mat-form-field-focus-outline-color: #{$nav};
+  }
+
+  .mat-mdc-form-field-hint,
+  .mat-mdc-form-field-counter {
+    color: #{color.adjust($text, $lightness: if(sass($is-text-light): -25%; else: 25%))};
+  }
+
+  // Chips (mat-chip, MDC chips)
+  .mat-mdc-standard-chip,
+  .mat-mdc-chip,
+  .suggestion-chip {
+    --mdc-chip-elevated-container-color: #{color.adjust($nav, $lightness: if(sass(color.channel($nav, 'lightness', $space: hsl) > 50%): -10%; else: 10%), $saturation: -10%)};
+    --mdc-chip-label-text-color: #{$text};
+    background-color: var(--mdc-chip-elevated-container-color) !important;
+    color: var(--mdc-chip-label-text-color) !important;
+    border: 1px solid #{$border-color};
+  }
+
+  .mat-mdc-chip-selected,
+  .mat-mdc-chip-highlighted {
+    --mdc-chip-elevated-container-color: #{$nav};
+  }
+
+  // Buttons
+  .mat-mdc-raised-button.mat-primary,
+  .mat-mdc-unelevated-button.mat-primary {
+    --mdc-filled-button-container-color: #{$nav};
+    background-color: var(--mdc-filled-button-container-color);
+    color: #{if(sass(color.channel($nav, 'lightness', $space: hsl) > 60%): #000; else: #fff)};
+  }
+
+  .mat-mdc-button:disabled,
+  .mat-mdc-raised-button:disabled,
+  .mat-mdc-unelevated-button:disabled {
+    --mdc-filled-button-disabled-container-color: #{color.adjust($bg, $lightness: if(sass($is-dark): 15%; else: -15%))};
+    color: #{color.adjust($text, $lightness: if(sass($is-text-light): -40%; else: 40%))} !important;
+  }
+
+  // Slide toggles
+  .mat-mdc-slide-toggle {
+    --mat-slide-toggle-selected-handle-color: #{$nav};
+    --mat-slide-toggle-selected-track-color: #{color.adjust($nav, $alpha: -0.46)};
+    --mat-slide-toggle-unselected-handle-color: #{color.adjust($text, $lightness: if(sass($is-text-light): -40%; else: 40%))};
+    --mat-slide-toggle-unselected-track-color: #{color.adjust($prim, $lightness: 5%)};
+  }
+}
+
+$bg-hacking-instructor: rgba(0, 0, 0, 0.3);
+
+.deeppurple-amber-theme {
+  @include custom-components-theme($deeppurple-amber-theme);
+  @include css-vars($deeppurple-amber-theme);
+  @include theme-overrides(#673ab7, #fafafa, #9575cd, #000);
+}
+
+.indigo-pink-theme {
+  @include custom-components-theme($indigo-pink-theme);
+  @include css-vars($indigo-pink-theme);
+  @include theme-overrides(#3f51b5, #fafafa, #7986cb, #000);
+}
+
+.pink-bluegrey-theme {
+  @include custom-components-theme($pink-bluegrey-theme);
+  @include css-vars($pink-bluegrey-theme);
+  @include theme-overrides(#c2185b, #303030, #e91e63, #fff);
+}
+
+.purple-green-theme {
+  @include custom-components-theme($purple-green-theme);
+  @include css-vars($purple-green-theme);
+  @include theme-overrides(#7b1fa2, #303030, #9c27b0, #fff);
+}
+
+.bluegrey-lightgreen-theme {
+  @include custom-components-theme($bluegrey-lightgreen-theme);
+  @include css-vars($bluegrey-lightgreen-theme);
+
+  // --- Target Theme Overrides ---
+
+  // Overriding project-specific background/surface variables
+  --theme-background: #3e3e3e;
+  --theme-background-lighter: #4a4a4a;
+  --theme-background-light: #5a5a5a;
+  --theme-background-darker: #333638;
+  --theme-background-dark: #303030;
+  --theme-background-darkest: #2b2b2b;
+
+  // Overriding project-specific text variables
+  --theme-text: #e8ecef;
+  --theme-text-lighter: #f2f5f7;
+  --theme-text-light: #fff;
+  --theme-text-darker: #b8c0c7;
+  --theme-text-dark: #7f8a93;
+
+  // Explicit Material M3 System tokens (ensures charcoal grey canvas)
+  --mat-sys-surface: #333638;
+  --mat-sys-on-surface: #e8ecef;
+  --mat-sys-surface-container: #3e3e3e;
+  --mat-sys-surface-container-high: #404244;
+  --mat-sys-on-surface-variant: #b8c0c7;
+  --mat-sys-outline: #5a5a5a;
+  --mat-sys-outline-variant: #404244;
+
+  // Component-specific alignment
+
+  // Top app bar / Toolbar (mat-toolbar)
+  .mat-mdc-toolbar,
+  mat-toolbar {
+    --mat-toolbar-container-background-color: #4f6f7a;
+    --mat-toolbar-container-text-color: #f2f5f7;
+    color: var(--mat-toolbar-container-text-color);
+  }
+
+  // Cards / Tiles / Panels
+  .mat-mdc-card,
+  .mat-expansion-panel {
+    --mdc-elevated-card-container-color: #3e3e3e;
+    background-color: var(--mdc-elevated-card-container-color);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  // Dialogs
+  .mat-mdc-dialog-container .mdc-dialog__surface {
+    --mdc-dialog-container-color: #3f3f3f;
+    background-color: var(--mdc-dialog-container-color);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  // Form Fields
+  .mat-mdc-form-field {
+    --mdc-filled-text-field-container-color: #4a4a4a;
+    --mdc-outlined-text-field-container-color: #4a4a4a;
+    --mat-form-field-focus-outline-color: #4f6f7a;
+  }
+
+  .mat-mdc-form-field-hint,
+  .mat-mdc-form-field-counter {
+    color: #b8c0c7;
+  }
+
+  // Chips (mat-chip, MDC chips)
+  .mat-mdc-standard-chip,
+  .mat-mdc-chip,
+  .suggestion-chip {
+    --mdc-chip-elevated-container-color: #4a626e;
+    --mdc-chip-label-text-color: #e8ecef;
+    background-color: var(--mdc-chip-elevated-container-color) !important;
+    color: var(--mdc-chip-label-text-color) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .mat-mdc-chip-selected,
+  .mat-mdc-chip-highlighted {
+    --mdc-chip-elevated-container-color: #81a823;
+  }
+
+  // Buttons
+  .mat-mdc-raised-button.mat-primary,
+  .mat-mdc-unelevated-button.mat-primary {
+    --mdc-filled-button-container-color: #516b77;
+    background-color: var(--mdc-filled-button-container-color);
+    color: #fff;
+  }
+
+  .mat-mdc-button:disabled,
+  .mat-mdc-raised-button:disabled,
+  .mat-mdc-unelevated-button:disabled {
+    --mdc-filled-button-disabled-container-color: #5a5a5a;
+    color: #7f8a93 !important;
+  }
+
+  // Slide toggles
+  .mat-mdc-slide-toggle {
+    --mat-slide-toggle-selected-handle-color: #4f6f7a;
+    --mat-slide-toggle-selected-track-color: rgba(79, 111, 122, 0.54);
+    --mat-slide-toggle-unselected-handle-color: #7f8a93;
+    --mat-slide-toggle-unselected-track-color: #4a4a4a;
+  }
+
+  // Error / Warn color overrides (making them more red)
+  --theme-warn: #f44336;
+  --theme-warn-lighter: #{color.adjust(#f44336, $lightness: 6%)};
+  --theme-warn-light: #{color.adjust(#f44336, $lightness: 10%)};
+  --theme-warn-darker: #{color.adjust(#f44336, $lightness: -6%)};
+  --theme-warn-dark: #{color.adjust(#f44336, $lightness: -10%)};
+  --theme-warn-fade-10: #{color.adjust(#f44336, $alpha: 0.1)};
+  --theme-warn-fade-20: #{color.adjust(#f44336, $alpha: 0.2)};
+  --theme-warn-fade-30: #{color.adjust(#f44336, $alpha: 0.3)};
+  --theme-warn-fade-40: #{color.adjust(#f44336, $alpha: 0.4)};
+  --theme-warn-fade-50: #{color.adjust(#f44336, $alpha: 0.5)};
+
+  --mat-sys-error: #f44336;
+  --mat-sys-on-error: #fff;
+
+  .error {
+    color: #f44336 !important;
+  }
+
+  .warn-notification {
+    background-color: #d32f2f !important;
+  }
+}
+
+.blue-lightblue-theme {
+  @include custom-components-theme($blue-lightblue-theme);
+  @include css-vars($blue-lightblue-theme);
+  @include theme-overrides(#1976d2, #fafafa, #29b6f6, #000);
+}
+
+.deeporange-indigo-theme {
+  @include custom-components-theme($deeporange-indigo-theme);
+  @include css-vars($deeporange-indigo-theme);
+  @include theme-overrides(#e64a19, #fafafa, #ff5722, #000);
+}
+
+.lime-green-theme {
+  @include custom-components-theme($lime-green-theme);
+  @include css-vars($lime-green-theme);
+  @include theme-overrides(#cddc39, #303030, #ddee48, #000);
+}
+
+.neon-fire-theme {
+  @include custom-components-theme($neon-fire-theme);
+  @include css-vars($neon-fire-theme);
+
+  @include score-star-theme($neon-fire-theme); // Re-include to fix empty-star color
+
+  // --- RedSees Marketplace "Supply Depot" Theme Overrides ---
+  // Re-skin of the neon-fire base: warm olive-drab crate ground instead of pure
+  // black, hazard-orange primary / signal-cyan tertiary instead of neon
+  // pink/yellow, self-hosted RedSees Mono (JetBrains Mono) for stencilled
+  // display type + RedSees Sans (IBM Plex Sans) for body/readable text.
+
+  // Overriding project-specific background/surface variables
+  --theme-background: #14170f;
+  --theme-background-lighter: #1d2216;
+  --theme-background-light: #262c1c;
+  --theme-background-darker: #101208;
+  --theme-background-dark: #0c0d06;
+  --theme-background-darkest: #080904;
+
+  // Overriding project-specific text variables
+  --theme-text: #ededd9;
+  --theme-text-lighter: #f5f4e8;
+  --theme-text-light: #fff;
+  --theme-text-darker: #c9c6ae;
+  --theme-text-dark: #97947e;
+
+  // Explicit Material M3 System tokens
+  --mat-sys-surface: #101208;
+  --mat-sys-on-surface: #ededd9;
+  --mat-sys-surface-container: #1d2216;
+  --mat-sys-surface-container-high: #262c1c;
+  --mat-sys-on-surface-variant: #c9c6ae;
+  --mat-sys-outline: #ff7a1a;
+  --mat-sys-outline-variant: #4a3a24;
+
+  // Extra system tokens for the RedSees hazard-orange / signal-cyan colors
+  --mat-sys-primary: #ff7a1a;
+  --mat-sys-on-primary: #14170f;
+  --mat-sys-tertiary: #4fd1c5;
+  --mat-sys-on-tertiary: #0a1f1c;
+
+  // Custom self-hosted typography (see @font-face block at top of this file)
+  font-family: 'RedSees Sans', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --mat-sys-display-large-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-display-medium-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-display-small-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-headline-large-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-headline-medium-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-headline-small-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-title-large-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-title-medium-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-title-small-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-label-large-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-label-medium-font: 'RedSees Mono', ui-monospace, monospace;
+  --mat-sys-label-small-font: 'RedSees Mono', ui-monospace, monospace;
+
+  // Readable stack for long-form text, inputs and chat prose
+  --neon-readable-font: 'RedSees Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+
+  --mat-sys-body-large-font: var(--neon-readable-font);
+  --mat-sys-body-medium-font: var(--neon-readable-font);
+
+  .mat-mdc-input-element,
+  .mat-mdc-select-value,
+  .mat-mdc-form-field-subscript-wrapper,
+  .mdc-floating-label,
+  .chat-bubble,
+  input,
+  textarea,
+  select {
+    font-family: var(--neon-readable-font);
+  }
+
+  .chat-textarea {
+    font-family: var(--neon-readable-font) !important;
+  }
+
+  // Link customizations
+  a {
+    color: #4fd1c5;
+  }
+
+  a:hover {
+    text-decoration: underline;
+    color: #7ce0d6;
+  }
+
+  // Component-specific alignment
+
+  // Top app bar / Toolbar (mat-toolbar) — hazard-stencil edge as the header signature
+  .mat-mdc-toolbar,
+  mat-toolbar {
+    --mat-toolbar-container-background-color: #14170f;
+    --mat-toolbar-container-text-color: #ededd9;
+    color: var(--mat-toolbar-container-text-color);
+    border-bottom: 3px solid #ff7a1a;
+  }
+
+  // Cards / Tiles / Panels
+  .mat-mdc-card,
+  .mat-expansion-panel {
+    --mdc-elevated-card-container-color: #1d2216;
+    background-color: var(--mdc-elevated-card-container-color);
+    border: 1px solid #ff7a1a;
+    box-shadow: none;
+  }
+
+  // Dialogs
+  .mat-mdc-dialog-container .mdc-dialog__surface {
+    --mdc-dialog-container-color: #1d2216;
+    background-color: var(--mdc-dialog-container-color);
+    border: 1px solid #ff7a1a;
+  }
+
+  // Form Fields
+  .mat-mdc-form-field {
+    --mdc-filled-text-field-container-color: #1d2216;
+    --mdc-outlined-text-field-container-color: #1d2216;
+    --mat-form-field-focus-outline-color: #ff7a1a;
+  }
+
+  // Chips (mat-chip, MDC chips)
+  .mat-mdc-standard-chip,
+  .mat-mdc-chip,
+  .suggestion-chip {
+    --mdc-chip-elevated-container-color: #1d2216;
+    --mdc-chip-label-text-color: #ededd9;
+    background-color: var(--mdc-chip-elevated-container-color) !important;
+    color: var(--mdc-chip-label-text-color) !important;
+    border: 1px solid #ff7a1a;
+  }
+
+  .mat-mdc-chip-selected,
+  .mat-mdc-chip-highlighted {
+    --mdc-chip-elevated-container-color: #ff7a1a;
+    --mdc-chip-label-text-color: #14170f;
+  }
+
+  // --- Score Board Specifics ---
+
+  // Category filter pills
+  .pill {
+    background-color: #14170f !important;
+    color: #ff7a1a !important;
+    border: 1px solid #ff7a1a !important;
+  }
+
+  .pill.selected,
+  .pill.active {
+    background-color: #4fd1c5 !important;
+    color: #0a1f1c !important;
+    border: 1px solid #4fd1c5 !important;
+    text-shadow: none !important;
+  }
+
+  // Challenge tags
+  .tag {
+    background-color: #262c1c !important;
+    color: #4fd1c5 !important;
+    border: 1px solid #5a5540 !important;
+  }
+
+  .tag.tag-missing-dependency {
+    color: #ff3b3b !important;
+    border-color: #ff3b3b !important;
+  }
+
+  .tag.tag-available-dependency {
+    color: #00e676 !important;
+    border-color: #00e676 !important;
+  }
+
+  // Star gauge (challenges solved)
+  linearGradient[id^='solved-gradient-'] stop:last-child {
+    stop-color: #24281c !important; // Use dark olive for "empty" part of star instead of pink
+  }
+
+  // --- End Score Board Specifics ---
+
+  // Buttons — stencilled, uppercase, monospace crate-label lettering
+  .mat-mdc-button,
+  .mat-mdc-raised-button {
+    text-transform: uppercase;
+    font-weight: bold;
+    font-family: 'RedSees Mono', ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+
+  .mat-mdc-raised-button.mat-primary,
+  .mat-mdc-unelevated-button.mat-primary {
+    --mdc-filled-button-container-color: #ff7a1a;
+    background-color: var(--mdc-filled-button-container-color);
+    color: #14170f;
+  }
+
+  .mat-mdc-unelevated-button.mat-tertiary {
+    --mdc-filled-button-container-color: #4fd1c5;
+    background-color: var(--mdc-filled-button-container-color);
+    color: #0a1f1c !important;
+  }
+
+  .mat-mdc-button:disabled,
+  .mat-mdc-raised-button:disabled,
+  .mat-mdc-unelevated-button:disabled,
+  .mat-mdc-icon-button:disabled {
+    --mdc-filled-button-disabled-container-color: #1d2216;
+    background-color: #1d2216 !important;
+    color: #5a5540 !important;
+    border: 1px solid #3a3a2a;
+  }
+
+  // Score Board badge buttons: keep dark ink on the light accent badges
+  .badge.not-completable,
+  .badge.completed,
+  .badge.partially-completed {
+    color: #14170f !important;
+  }
+
+  .badge:disabled {
+    background-color: #1d2216 !important;
+    color: #6b6b56 !important;
+  }
+
+  // Hover state: crisp target-lock outline instead of a neon blur — ties back
+  // to the reticle mark, reads as "acquired" rather than a generic glow.
+  .mat-mdc-button:hover,
+  .mat-mdc-raised-button:hover {
+    outline: 2px solid #4fd1c5;
+    outline-offset: 2px;
+  }
+
+  // Slide toggles
+  .mat-mdc-slide-toggle {
+    --mat-slide-toggle-selected-handle-color: #ff7a1a;
+    --mat-slide-toggle-selected-track-color: rgba(255, 122, 26, 0.46);
+    --mat-slide-toggle-unselected-handle-color: #97947e;
+    --mat-slide-toggle-unselected-track-color: #1d2216;
+  }
+
+  // Scrollbar overrides
+  ::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #101208;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #ff7a1a;
+  }
+
+  // Error / Warn color overrides — kept a distinct alert red so real errors
+  // never compete visually with the hazard-orange brand accent
+  --theme-warn: #ff3b3b;
+  --mat-sys-error: #ff3b3b;
+  --mat-sys-on-error: #fff;
+
+  .error {
+    color: #ff3b3b !important;
+  }
+
+  .warn-notification {
+    background-color: #ff3b3b !important;
+    color: #fff !important;
+  }
+}
+
+.close-dialog {
+  float: right;
+  width: fit-content;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.mat-expansion-panel-header {
+  // If the panel, that the header is in, is inside an element being animated by Angular,
+  // the default behavior is to block all child animations. This means that the header's
+  // height won't kick in until the parent animation is done. We add a fallback to the
+  // header's default height. If the animations aren't blocked, these styles will be overridden
+  // by the inline styles from the animations module.
+  .ng-animating .mat-expansion-panel & {
+    min-height: 48px;
+  }
+
+  .ng-animating .mat-expansion-panel.mat-expanded & {
+    min-height: 64px;
+  }
+}
+
+.mat-expansion-panel-content {
+  // If the expansion panel is inside an element being animated by Angular,
+  // the default behavior is to block all child animations. This means that the
+  // default `height: 0` won't kick in until the parent animation is over, which
+  // will cause the panel to appear open, before it snaps into place. We don't want
+  // to set the default height to zero, because it'll break the `height: '*'` from
+  // the animation definitions. Instead we add a fallback that only applies only if
+  // it's inside a parent that is mid-animation.
+  .ng-animating .mat-expansion-panel:not(.mat-expanded) & {
+    height: 0;
+    overflow: hidden;
+  }
+}
+
+#hacking-instructor code {
+  background-color: $bg-hacking-instructor;
+  border-radius: 1px;
+  font-family: monospace;
+  padding: 0 $space-2xs;
+}
+
+.cm-editor {
+  border-radius: 16px;
+}
+
+div.mdc-card {
+  padding: $space-m;
+}
+
+.mat-mdc-button {
+  white-space: nowrap;
+}
+
+.multiline-tooltip {
+  line-height: 1.2;
+  max-width: 480px;
+  white-space: pre-line;
+}
+
+
+/* override Angular Material tooltip max-height for score-board hints */
+.mat-mdc-tooltip-surface {
+  max-height: none !important;
+}

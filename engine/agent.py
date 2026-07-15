@@ -789,7 +789,8 @@ def _rung_transcript(url: str, rung, tool_result: dict) -> dict:
 def run_sqli_agent(endpoints: list, *, max_iterations: int = 6,
                    approve_dump: bool = False, max_level: int = _DEFAULT_MAX_LEVEL,
                    max_risk: int = _DEFAULT_MAX_RISK, scope_config=None,
-                   llm_config=None, llm_client=None) -> SqliAgentResult:
+                   llm_config=None, llm_client=None,
+                   timeout_sec: int | None = None) -> SqliAgentResult:
     """Drive the LLM to hunt SQLi across `endpoints` via the sandboxed run_sqlmap tool.
 
     Detection escalates along a bounded ladder of increasing depth. The model may
@@ -801,9 +802,14 @@ def run_sqli_agent(endpoints: list, *, max_iterations: int = 6,
     Fakes may be injected for tests via scope_config / llm_config / llm_client.
     approve_dump is reserved for a future human-in-the-loop step; while False
     (default) no data-dumping flags are ever added (none are implemented here).
+    `timeout_sec` (optional) bounds each sandboxed sqlmap run — a scan mode passes
+    a tighter value (default _SANDBOX_TIMEOUT_SEC) so a fast scan never stalls on
+    one slow endpoint.
     """
     if scope_config is None:
         scope_config = load_scope_config()
+
+    scan_timeout = timeout_sec if timeout_sec is not None else _SANDBOX_TIMEOUT_SEC
 
     # ONE budget tracker for the whole run.
     if llm_client is None:
@@ -891,7 +897,7 @@ def run_sqli_agent(endpoints: list, *, max_iterations: int = 6,
             else:
                 tool_result, candidate, rung = _execute_run_sqlmap(
                     arguments, scope_config=scope_config,
-                    max_level=max_level, max_risk=max_risk)
+                    max_level=max_level, max_risk=max_risk, timeout_sec=scan_timeout)
                 if candidate is not None:
                     candidates.append(candidate)
                     tool_executions += 1
@@ -958,7 +964,7 @@ def run_sqli_agent(endpoints: list, *, max_iterations: int = 6,
                         continue                      # already run in the agent phase
                     tool_result, candidate = _run_one_rung(
                         target, data, rung, scope_config=scope_config,
-                        max_level=max_level, max_risk=max_risk)
+                        max_level=max_level, max_risk=max_risk, timeout_sec=scan_timeout)
                     # Record the probe value the URL ACTUALLY carried (never None
                     # while the URL had e.g. q=apple).
                     tool_result["target_url"] = target

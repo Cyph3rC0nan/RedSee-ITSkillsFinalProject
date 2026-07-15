@@ -9,29 +9,39 @@ human or a future agent session can parse it without ambiguity. Anything NOT lis
 in this file is not an intentionally planted vuln for this demo pass (XSS-only scope
 — no SQLi/IDOR/auth issues were added this pass).
 
-Base URL / hostname: http://redsees.com:8081/market/
+Base URL / hostname: http://redsees.com:3000/market/
 Themed Juice Shop (branding only, no planted vulns of its own beyond stock Juice
 Shop challenges): http://redsees.com:3000/ (NODE_CONFIG_ENV=redsees)
+
+Port note (2026-07-14): the sink service and Juice Shop now sit behind ONE public
+port via demo-target/gateway/, a reverse proxy (/market/* -> the sink service,
+everything else -> Juice Shop). The sink service's own code (demo-target/
+marketplace_sinks.py) is unchanged and still internally listens on :8081 — only
+the externally-reachable port changed, from :8081 directly to :3000 via the
+gateway. All `url:` fields below reflect the current, gateway-fronted address.
 
 Authorization: lab-only target, reachable from the RedSee sandbox exclusively,
 never exposed publicly. All proofs are benign (`alert(1)`-style). No real user data.
 
-Verified 2026-07-12: live `dalfox url` run (v2.13.0, via the redsee-sandbox image)
-against all three sinks each produced a `[POC][V][GET][...]` line, e.g.
+Verified 2026-07-12 (pre-gateway, direct :8081): live `dalfox url` run (v2.13.0,
+via the redsee-sandbox image) against all three sinks each produced a
+`[POC][V][GET][...]` line, e.g.
 `[POC][V][GET][inHTML-URL] http://localhost:8081/market/search?q=test%3E...`
 — confirms _parse_dalfox_output's injectable path (a real [POC] structural match).
-Note: the bracketed context Dalfox prints per line (e.g. `inHTML-URL`) is ITS OWN
-per-payload technique label, not a property of the sink — it varies with whichever
-payload happened to succeed. `reflection_context: inHTML-none` below describes the
-actual source-level placement we built (plain body text between tags, zero
-encoding); it is not expected to always match Dalfox's per-run context tag.
+The sink responses are unchanged by the later gateway/port change, so this result
+still holds for the current :3000 address. Note: the bracketed context Dalfox
+prints per line (e.g. `inHTML-URL`) is ITS OWN per-payload technique label, not a
+property of the sink — it varies with whichever payload happened to succeed.
+`reflection_context: inHTML-none` below describes the actual source-level
+placement we built (plain body text between tags, zero encoding); it is not
+expected to always match Dalfox's per-run context tag.
 
 === VULN: XSS-R-01 ===
 class: XSS
 subtype: reflected
 detectable_by: dalfox (HTTP, no headless browser)
 method: GET
-url: http://redsees.com:8081/market/search
+url: http://redsees.com:3000/market/search
 param: q
 reflection_context: inHTML-none (body text, between tags)
 filtering: none (raw, unescaped)
@@ -46,7 +56,7 @@ class: XSS
 subtype: reflected
 detectable_by: dalfox (HTTP, no headless browser)
 method: GET
-url: http://redsees.com:8081/market/greeting
+url: http://redsees.com:3000/market/greeting
 param: name
 reflection_context: inHTML-none (body text, between tags)
 filtering: none (raw, unescaped)
@@ -61,7 +71,7 @@ class: XSS
 subtype: reflected
 detectable_by: dalfox (HTTP, no headless browser)
 method: GET
-url: http://redsees.com:8081/market/notfound
+url: http://redsees.com:3000/market/notfound
 param: path
 reflection_context: inHTML-none (body text, between tags)
 filtering: none (raw, unescaped)
