@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedSee — Security Operations Console</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
@@ -42,6 +43,7 @@
           <span class="rail-stat-k">SCOPE</span>
           <span class="rail-stat-v">per-op auth</span>
         </div>
+        <a class="btn btn-ghost rail-signout" href="/logout">Sign out</a>
       </div>
     </aside>
 
@@ -205,8 +207,11 @@
 
             <div class="ingest-row">
               <label class="field wazuh-field">
-                <span class="field-label">Wazuh alerts.json — last N alerts</span>
-                <input type="number" id="alertsLastN" value="300" min="1" max="5000" />
+                <span class="field-label">Wazuh alerts.json — most recent</span>
+                <div class="input-suffix">
+                  <input type="number" id="alertsLastN" value="300" min="1" max="5000" />
+                  <span class="suffix-unit">alerts</span>
+                </div>
               </label>
               <button class="btn btn-cyan" id="alertsBtn">Load alerts.json</button>
             </div>
@@ -215,8 +220,11 @@
 
             <div class="ingest-row">
               <label class="field wazuh-field">
-                <span class="field-label">Wazuh API — last N minutes</span>
-                <input type="number" id="wazuhMinutes" value="30" min="1" max="1440" />
+                <span class="field-label">Wazuh API — look-back window</span>
+                <div class="input-suffix">
+                  <input type="number" id="wazuhMinutes" value="30" min="1" max="1440" />
+                  <span class="suffix-unit">min</span>
+                </div>
               </label>
               <button class="btn btn-cyan-ghost" id="wazuhBtn">Fetch Alerts</button>
             </div>
@@ -272,5 +280,6 @@
 
   </div>
   <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <script src="{{ url_for('static', filename='rn-cursor.js') }}"></script>
 </body>
 </html>

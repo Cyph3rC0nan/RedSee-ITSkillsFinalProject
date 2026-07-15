@@ -31,7 +31,10 @@ import threading
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
-from flask import Flask, request, jsonify, send_file, render_template, Response
+from flask import (
+    Flask, request, jsonify, send_file, render_template, Response,
+    session, redirect, url_for,
+)
 from flask_cors import CORS
 
 from log_ingestor import (
@@ -63,44 +66,116 @@ except Exception as _exc:                     # noqa: BLE001 - optional pipeline
 app = Flask(__name__)
 CORS(app)
 
+# Signs the session cookie that carries the login flag. Set REDSEE_SECRET_KEY in
+# .env to keep sessions valid across restarts; unset falls back to a per-process
+# random key (every restart invalidates existing sessions — fine for dev).
+app.secret_key = os.environ.get("REDSEE_SECRET_KEY") or secrets.token_hex(32)
+
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
-# ─── HTTP Basic Auth gate ──────────────────────────────────
+# ─── Session login gate ────────────────────────────────────
 # The console is a pentest control surface; when exposed on a network it must not
 # be open. Credentials come from the environment (REDSEE_DASH_USER / _PASS, loaded
 # from .env). Auth is enforced whenever a password is configured; if none is set
 # (local dev), the gate is a no-op so the app still runs without credentials.
+#
+# Flow: public landing (/) → /login (form) → session["authed"] set → /console
+# (the dashboard). Replaces the old browser-native HTTP Basic Auth (no more
+# WWW-Authenticate popup); a signed Flask session cookie carries the auth state.
 _DASH_USER = os.environ.get("REDSEE_DASH_USER", "admin")
 _DASH_PASS = os.environ.get("REDSEE_DASH_PASS", "")
 
+# Routes reachable without a session. Everything else requires login when a
+# password is configured. /static/* is matched by prefix (see _wants_json_401).
+_PUBLIC_PATHS = {"/", "/login", "/logout"}
+
+
+def _check_credentials(username: str, password: str) -> bool:
+    """Constant-time compare of both fields (same discipline the old Basic Auth
+    used). Never reveals which field was wrong to the caller."""
+    return (
+        secrets.compare_digest(username or "", _DASH_USER)
+        and secrets.compare_digest(password or "", _DASH_PASS)
+    )
+
+
+def _wants_json_401() -> bool:
+    """An unauthenticated request should get a JSON 401 (not an HTML redirect)
+    when it's an API/XHR/fetch call — otherwise fetch() would silently follow the
+    redirect and receive the login HTML as a 200. True = return 401 JSON; False =
+    redirect the browser to /login."""
+    if request.path.startswith("/api/"):
+        return True
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return True
+    accept = request.headers.get("Accept", "")
+    # A genuine top-level browser navigation asks for text/html and (modern
+    # browsers) sends Sec-Fetch-Mode: navigate. script.js's fetch() calls send
+    # neither, so they fall through to the JSON branch.
+    is_navigation = "text/html" in accept and \
+        request.headers.get("Sec-Fetch-Mode", "navigate") == "navigate"
+    return not is_navigation
+
 
 @app.before_request
-def _require_basic_auth():
+def _require_login():
     if not _DASH_PASS:
         return None                       # no password configured → auth disabled (dev)
-    auth = request.authorization
-    ok = (
-        auth is not None
-        and (auth.type or "").lower() == "basic"
-        and secrets.compare_digest(auth.username or "", _DASH_USER)
-        and secrets.compare_digest(auth.password or "", _DASH_PASS)
-    )
-    if ok:
+    if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
         return None
-    return Response(
-        "RedSee console — authentication required.",
-        401, {"WWW-Authenticate": 'Basic realm="RedSee Security Operations Console"'},
-    )
+    if session.get("authed"):
+        return None
+    if _wants_json_401():
+        return jsonify({"error": "Authentication required. Sign in at /login."}), 401
+    return redirect(url_for("login"))
 
 # In-memory state stores (no DB needed for prototype)
 scans = {}           # scan_id → {status, findings, target_url, ...}
 blue_analyses = {}   # analysis_id → {events, event_count, report_path}
 
 
-# ─── ROUTE: Dashboard ──────────────────────────────────────
+# ─── ROUTE: Public landing page ────────────────────────────
 @app.route("/")
-def index():
+def home():
+    """Public marketing/landing page. No auth."""
+    return render_template("home.html")
+
+
+# ─── ROUTE: Login / logout ─────────────────────────────────
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """GET renders the login form; POST validates credentials and, on success,
+    sets the session and redirects to the console. No auth required to reach it.
+    On failure: a single generic error (never leaks which field was wrong)."""
+    # If auth is disabled (dev) or already signed in, skip straight to the console.
+    if not _DASH_PASS or session.get("authed"):
+        return redirect(url_for("console"))
+
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if _check_credentials(username, password):
+            session["authed"] = True
+            return redirect(url_for("console"))
+        # Generic failure — do not reveal whether user or password was wrong.
+        return render_template("login.html", error="Invalid credentials."), 401
+
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    """Clear the session and return to the public landing page."""
+    session.clear()
+    return redirect(url_for("home"))
+
+
+# ─── ROUTE: Dashboard (console) ────────────────────────────
+@app.route("/console")
+def console():
+    """The operations console (the single-page dashboard). Auth-gated by
+    _require_login when a password is configured."""
     return render_template("index.html")
 
 
