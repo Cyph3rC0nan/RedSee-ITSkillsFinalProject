@@ -40,13 +40,17 @@ def main() -> None:
     wall = time.time() - t0
 
     print(f"\n=== STANDARD scan of ROOT — wall={wall:.0f}s ===")
-    print("discovery:", json.dumps(rec["discovery"]))
-    print("caps:", json.dumps({
+    print(f"scan record (authoritative, avoids terminal line-wrap corruption): "
+          f"{rec['outputs']['scan']}")
+    print("discovery:")
+    print(json.dumps(rec["discovery"], indent=2))
+    print("caps:")
+    print(json.dumps({
         k: rec["caps"][k] for k in (
             "seed_paths", "seed_params", "max_discovered_paths",
             "max_total_injection_targets", "max_parallel_sandboxes",
         )
-    }))
+    }, indent=2))
 
     # Full, UNTRUNCATED detail — a truncated error message is worse than useless
     # when diagnosing a sandbox/Docker-networking failure (the real cause is

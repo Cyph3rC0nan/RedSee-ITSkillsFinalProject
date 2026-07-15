@@ -65,8 +65,18 @@ _API_PATH_MARKERS = ("/api/", "/rest/", "/v1/", "/v2/", "/graphql", "/gql/")
 # actually consumes a parameter (vs. a plain collection GET). Seeded paths are ranked
 # so these come FIRST, so a tight per-mode path cap still reaches the high-value ones
 # (e.g. /rest/products/SEARCH — the endpoint carrying the injectable `q`).
-_QUERY_PATH_MARKERS = ("search", "query", "find", "lookup", "filter",
-                       "list", "fetch", "get", "products", "users", "orders")
+#
+# Split into two tiers, not one flat set: STRONG markers are query/search VERBS —
+# a path containing one almost certainly consumes a param (a dedicated search/filter
+# endpoint). WEAK markers are plain collection NOUNS (`/api/Products`) — a bare
+# `GET /api/Products` frequently takes NO meaningful query param at all, so it must
+# not out-rank a path that also matches a strong verb. Without this split,
+# `/api/Products` (weak-only) and `/rest/products/search` (strong + weak) landed in
+# the SAME tier and the alphabetical tie-break ("api" < "rest") picked the wrong one
+# under a tight `seed_paths=1` cap — live-evidenced: the real `/rest/products/search`
+# SQLi target was starved out in favor of `/api/Products`.
+_QUERY_PATH_MARKERS_STRONG = ("search", "query", "find", "lookup", "filter")
+_QUERY_PATH_MARKERS_WEAK = ("list", "fetch", "get", "products", "users", "orders")
 
 _seed_params_cache: list | None = None
 
@@ -304,12 +314,19 @@ def _seed_injection_target(url: str, method: str, params: list, endpoint) -> Inj
 
 
 def _seed_path_rank(url: str) -> tuple:
-    """Ranking key for a seedable path: QUERY/SEARCH-like paths first (they actually
-    consume a param), then by URL for a deterministic, total order. So a tight
-    `max_paths` cap reaches /rest/products/search before /rest/captcha."""
+    """Ranking key for a seedable path: a STRONG query-verb marker (search/query/
+    find/lookup/filter) ranks first (tier 0), a WEAK collection-noun-only marker
+    (products/users/orders/list/fetch/get) second (tier 1), anything else last
+    (tier 2) — then by URL for a deterministic, total order. So a tight `max_paths`
+    cap reaches /rest/products/search (strong) before /api/Products (weak-only)."""
     path = _norm_path(url).lower()
-    is_query_like = any(m in path for m in _QUERY_PATH_MARKERS)
-    return (0 if is_query_like else 1, url)
+    if any(m in path for m in _QUERY_PATH_MARKERS_STRONG):
+        tier = 0
+    elif any(m in path for m in _QUERY_PATH_MARKERS_WEAK):
+        tier = 1
+    else:
+        tier = 2
+    return (tier, url)
 
 
 def build_seed_targets(endpoints, *, param_names, max_paths: int | None = None,
