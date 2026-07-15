@@ -84,10 +84,14 @@ def _mock_all(monkeypatch, *, endpoints=None, sqli=None, xss=None,
     """Install a full set of passing tool doubles; any can be overridden."""
     eps = [_endpoint()] if endpoints is None else endpoints
     monkeypatch.setattr(scan, "crawl", lambda t: _sitemap(t, eps))
-    # The orchestrator now drives the agents directly; mock at the injection-driver
-    # boundary (returns Findings), the same shape the old scan_sqli/scan_xss had.
-    monkeypatch.setattr(scan, "_scan_sqli_targets", lambda targets, **k: list(sqli or []))
-    monkeypatch.setattr(scan, "_scan_xss_targets", lambda targets, **k: list(xss or []))
+    # The orchestrator drives the agents directly; mock at the injection-driver
+    # boundary. Signature is (crawled, seeded=None, **kwargs) -> (findings,
+    # candidate_summaries); findings come from whichever targets were passed
+    # (crawled here), candidate summaries left empty (not under test here).
+    monkeypatch.setattr(scan, "_scan_sqli_targets",
+                        lambda crawled, seeded=None, **k: (list(sqli or []), []))
+    monkeypatch.setattr(scan, "_scan_xss_targets",
+                        lambda crawled, seeded=None, **k: (list(xss or []), []))
     monkeypatch.setattr(scan, "run_nuclei_agent",
                         lambda t, **k: _nuclei_result(list(nuclei or [])))
     monkeypatch.setattr(scan, "run_httpx", lambda t, **k: list(httpx or []))

@@ -123,7 +123,11 @@ _TLSX_FORBIDDEN = {
 # forbidden below); `-recursion` is NEVER passed (ffuf defaults it to off) and
 # is likewise hard-forbidden, so a scan never explodes into sub-paths.
 _FFUF_WORDLIST = "/opt/wordlists/common.txt"
-_FFUF_MATCH_CODES = "200,204,301,302,307,401,403"
+# 308 (Permanent Redirect) is included alongside 301/302/307: a path that a reverse
+# proxy/app redirects to its canonical form (e.g. /market -> 308 -> /market/) is a
+# real discovered path — omitting 308 silently dropped exactly such an endpoint on
+# the live target (the gateway 308-redirects /market to the marketplace).
+_FFUF_MATCH_CODES = "200,204,301,302,307,308,401,403"
 _FFUF_BASE_PROFILE = ["-json", "-s", "-noninteractive", "-mc", _FFUF_MATCH_CODES, "-ac"]
 
 # Directory brute-forcing is inherently noisier than a single httpx/tlsx probe

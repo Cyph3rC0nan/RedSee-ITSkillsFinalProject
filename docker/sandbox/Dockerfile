@@ -153,6 +153,30 @@ RUN mkdir -p /opt/wordlists \
  && echo "${WORDLIST_SHA256}  /opt/wordlists/common.txt" | sha256sum -c - \
  && chmod -R a+rX /opt/wordlists
 
+# Parameter-name wordlist for COMMON-PARAMETER SEEDING (D-025/D-026) — the host-side
+# orchestrator (engine/params.py) pairs a discovered, parameter-LESS API path with
+# these names to build (url, param) injection candidates when the crawler can't see
+# a param (JSON API, no HTML form). Bundled here too so the image is the single
+# reproducible source of truth for the list (parity with common.txt above).
+#   Source:  curated by hand — the highest-signal entries of Arjun's db/params.txt
+#            (github.com/s0md3v/Arjun, MIT) + SecLists' burp-parameter-names.txt
+#            (github.com/danielmiessler/SecLists, MIT), ordered by signal
+#            (search/query params first, then ids, then generic). D-026 SHRANK
+#            this from a 297-name list to 25: on an 8 GB host running Juice Shop
+#            alongside the scan, seeding more params/paths -> more sandboxed
+#            sqlmap/Dalfox runs -> real memory pressure (confirmed: Juice Shop's
+#            OWN Node heap OOM'd under a wide seed sweep). 25 still covers every
+#            practical param name (q/id/search/... incl. the confirmed
+#            /rest/products/search SQLi's `q`) while keeping the caps in
+#            modules/scan.py's ScanProfile tight (see _SEED_MAX_* / seed_paths).
+#   File:    docker/sandbox/params.txt (ships IN THIS REPO, not downloaded — a
+#            curated subset isn't a single upstream file; the repo copy IS the pin).
+#   Count:   25 unique names   Sha256 (verified at build):
+#            42706bec64083e8c0de713d8be82e69d0a781a8239a17b432dfeee014c078857
+COPY params.txt /opt/wordlists/params.txt
+RUN echo "42706bec64083e8c0de713d8be82e69d0a781a8239a17b432dfeee014c078857  /opt/wordlists/params.txt" | sha256sum -c - \
+ && chmod a+rX /opt/wordlists/params.txt
+
 # Shared ProjectDiscovery config/cache dirs (nuclei, httpx, tlsx). None of these
 # Go tools key their state off $HOME — they resolve it via
 # $XDG_CONFIG_HOME/$XDG_CACHE_HOME (Go's os.UserConfigDir/UserCacheDir). We point

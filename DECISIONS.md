@@ -612,3 +612,87 @@ per-mode `-severity` — kept `low..critical` globally; the path scope + tags al
 bound it. (c) mode-tune injection via `scan_sqli` kwargs — impossible (frozen
 signature), hence the direct-agent path. (d) higher parallelism — bounded at 2 given
 prior iptables-state collisions from killed runs.
+
+### D-025: Discovery→injection loop + common-parameter seeding for param-less API paths
+
+**Status:** Accepted
+**Date:** 2026-07-14
+**Decision:** `run_scan` became DISCOVERY-FIRST and gained common-parameter seeding, so
+scanning only the ROOT URL now finds vulns on paths/params the operator never named.
+Pieces:
+  * **Discovery-first reorder (modules/scan.py):** crawl(root) → ffuf + httpx run
+    BEFORE injection → each ffuf-discovered path not linked from the root (e.g.
+    `/market`) is RE-CRAWLED (bounded per mode + scope-checked on every fetch) to
+    surface its params → injection runs on the merged set, concurrently with
+    nuclei/tlsx. `crawler.crawl()` gained optional `max_pages`/`max_depth` for the
+    bounded re-crawl.
+  * **Crawler JS fix (crawler.py):** `JS_API_PATTERN` now allows a leading `}`/`)`
+    (SPA template-literal boundary — `` `${base}/rest/...` ``) and a trailing `?`
+    (query start). The old pattern required a quote on both sides, so it silently
+    dropped every interpolated / query-bearing API path — it caught `/rest/products`
+    but MISSED `/rest/products/search`, the endpoint carrying the injectable `q`.
+    Generic modern-SPA improvement, not target-specific.
+  * **Common-parameter seeding (engine/params.py + a bundled wordlist):** a curated
+    297-name param list (`docker/sandbox/params.txt`, sha256-pinned, COPY'd into the
+    sandbox at `/opt/wordlists/params.txt` — parity with the ffuf wordlist) is paired
+    onto param-LESS, API-looking paths to build candidate (url, param) targets. Params
+    are PACKED into one query string so sqlmap/Dalfox test them all in ONE sandboxed
+    run (the key to bounding runtime). Seeding proposes CANDIDATES only — a finding
+    still derives solely from the tool confirming injection (D-013); a seeded param
+    the tool reports not-injectable is never a finding.
+**Why these choices:**
+  * *Seeding, not a param-brute tool (Arjun):* no new external tool/dep. The static
+    list + the existing agents' evidence gate does the job; Arjun would add a binary
+    AND its own detection heuristic outside our evidence discipline.
+  * *Packed params + a SHALLOW seeded pass (`_SEED_MAX_LEVEL=1`):* a seeded param is a
+    guess, not a crawled fact, so it gets a broad level-1 sweep, one sandboxed run per
+    path testing all packed params — bounded regardless of list size. A crawled,
+    param-bearing target still gets the mode's full depth. Deep's extra thoroughness
+    is MORE seeded params/paths, not deeper per seed.
+  * *Bounded everywhere, mode-aware:* fast = no discovery/seeding (a quick look at what
+    the crawl already sees); standard = ≤8 discovered re-crawls + ≤3 seeded API paths ×
+    15 params; deep = ≤15 re-crawls + ≤6 paths × the full list. For a target with no
+    extra discoverable surface, deep == the pre-D-025 behavior.
+  * *Fixing the crawler regex vs. recursive ffuf:* `/rest/products/search` is 3 segments
+    deep; ffuf (single-segment, from root) can't reach it and recursive ffuf is a
+    runtime bomb. It's already in the SPA's JS — the crawler just couldn't parse the
+    template-literal form. Fixing the parser is generic and free.
+**Constraints honored:** schemas.py + engine/sandbox.py untouched (empty diff); every
+discovered-path fetch + seeded injection is scope-checked, sandboxed (injection),
+rate-bounded; evidence gate intact for seeded candidates exactly as for crawled ones.
+
+### D-026: Right-size common-parameter seeding for an 8 GB host (lean list + tighter caps + serial-by-default)
+
+**Status:** Accepted
+**Date:** 2026-07-14
+**Decision:** D-025's seeding worked (found the `/rest` SQLi) but was too heavy for this
+project's 8 GB host, which also runs the scanned target (Juice Shop) itself — live testing
+showed Juice Shop's OWN Node heap OOM'ing under a wide seed sweep, not just sandbox-
+container pressure. Right-sized three levers:
+  * **Param list: 297 → 25 names** (`docker/sandbox/params.txt`, re-pinned sha256). Still
+    curated/signal-ordered (`q` first — the confirmed SQLi param), still covers every
+    practical common param name, just far fewer requests generated per seeded path.
+  * **Mode caps tightened:** standard now seeds `seed_paths=1` (the single highest-ranked
+    seedable path — `_seed_path_rank` already ranks query/search-like paths first, so this
+    is `/rest/products/search`, not a random pick) × the full (now-lean) list, packed into
+    ONE sandboxed run (`seed_batch=30` ≥ list size). Deep: `seed_paths=3`. Both dropped the
+    old `seed_params` sub-cap (redundant now that the list itself is small).
+  * **`REDSEE_MAX_PARALLEL_SANDBOXES` default: 2 → 1** (fully serial). Still overridable up
+    for a bigger host; documented as a memory/wall-clock trade-off.
+  * **NEW hard ceiling** `_MAX_TOTAL_INJECTION_TARGETS=20` in `modules/scan.py` — applied
+    AFTER mode caps, trims seeded targets first (candidates) before crawled (confirmed
+    params), so even a misconfigured/future profile or a pathologically param-rich target
+    can't spawn dozens of sandboxed sqlmap/Dalfox runs in one scan. Recorded in
+    `record["caps"]["max_total_injection_targets"]`.
+**Why:** The task's own framing was correct — total sandboxed injection RUNS (not list-file
+size) drives memory pressure, and on this host the scanned TARGET's own process competes for
+the same RAM as the sandbox containers. Fixing only the list size without also tightening
+`seed_paths`/concurrency would have left the same total-run count; fixing only caps without
+shrinking the list would still risk a huge single-path payload. All three levers together.
+**Verification, not assumption:** confirmed `/rest/products/search` still ranks #1 among
+seedable paths under the new caps (so standard's `seed_paths=1` still finds it) BEFORE
+declaring this "done" — see PROGRESS.md/HANDOFF.md for the live proof (host memory + both
+findings) run against the actual target.
+**Constraints honored:** discovery loop + seeding kept (not removed); schemas.py +
+engine/sandbox.py untouched; evidence gate unchanged (seeded params still only become
+findings via tool confirmation).

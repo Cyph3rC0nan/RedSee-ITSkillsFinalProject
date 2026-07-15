@@ -55,6 +55,11 @@ cp -f "${THEMEPACK}/images/RedSees_Logo.svg" "${FRONTEND_SRC}/assets/public/imag
 cp -f "${THEMEPACK}/favicon/redsees_favicon.ico" "${FRONTEND_SRC}/assets/public/"
 echo "  logo + favicon -> assets/public/"
 
+# --- Product catalog images (custom icon set, referenced by config/redsees.yml) ---
+mkdir -p "${FRONTEND_SRC}/assets/public/images/products"
+cp -f "${THEMEPACK}/images/products/"*.png "${FRONTEND_SRC}/assets/public/images/products/"
+echo "  product images -> assets/public/images/products/"
+
 # --- App shell ---
 cp -f "${THEMEPACK}/frontend-src/index.html" "${FRONTEND_SRC}/index.html"
 echo "  index.html"
@@ -84,3 +89,6 @@ echo -e "${BLUE}Rebuilding frontend (npm run build:frontend)...${NC}"
 
 echo -e "${GREEN}✅ Frontend rebuilt with the RedSees Marketplace re-skin.${NC}"
 echo "  Start Juice Shop with NODE_CONFIG_ENV=redsees to apply matching branding/config."
+echo "  (Juice Shop re-syncs its DB from config/redsees.yml's products list on every"
+echo "   boot, so a plain restart — no manual DB reset — is enough to pick up a"
+echo "   catalog change; the frontend rebuild above is only needed for new image files.)"

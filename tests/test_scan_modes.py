@@ -217,13 +217,28 @@ def test_unknown_mode_degrades_to_standard(monkeypatch, tmp_path):
 # ── deep unchanged: every param-bearing endpoint, all recon ──────────────────
 
 def test_deep_injects_every_param_bearing_endpoint(monkeypatch, tmp_path):
-    eps = [_link(i) for i in range(21)] + [_pageless(0)]
+    # Kept comfortably under the global _MAX_TOTAL_INJECTION_TARGETS safety ceiling
+    # (see test_global_injection_ceiling_bounds_a_pathological_target below) so this
+    # test isolates "deep has no MODE-level cap" from the separate hard ceiling.
+    eps = [_link(i) for i in range(12)] + [_pageless(0)]
     rec = _setup(monkeypatch, endpoints=eps)
     record = run_scan(IN_SCOPE, scope_config=_scope(), out_dir=str(tmp_path), mode="deep")
-    # all 21 param-bearing endpoints injected (the one param-less page excluded)
-    assert len(rec["sqli"]["targets"]) == 21
-    assert record["caps"]["injection_targets_selected"] == 21
+    # all 12 param-bearing endpoints injected (the one param-less page excluded)
+    assert len(rec["sqli"]["targets"]) == 12
+    assert record["caps"]["injection_targets_selected"] == 12
     assert record["caps"]["max_injection_targets"] is None
+
+
+def test_global_injection_ceiling_bounds_a_pathological_target(monkeypatch, tmp_path):
+    """Even deep mode (max_injection_targets=None -> no MODE cap) must never exceed
+    the HARD _MAX_TOTAL_INJECTION_TARGETS ceiling — the last line of defense against
+    a param-rich target spawning dozens of sandboxed injection runs in one scan."""
+    eps = [_link(i) for i in range(40)]
+    rec = _setup(monkeypatch, endpoints=eps)
+    record = run_scan(IN_SCOPE, scope_config=_scope(), out_dir=str(tmp_path), mode="deep")
+    ceiling = record["caps"]["max_total_injection_targets"]
+    assert len(rec["sqli"]["targets"]) == ceiling
+    assert record["summary"]["injection_targets"] <= ceiling
 
 
 # ── concurrent path: a per-tool failure is an error entry, scan completes ─────

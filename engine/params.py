@@ -38,7 +38,37 @@ exactly those three attributes — no agent signature change, no schemas.py chan
 """
 
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit, parse_qsl
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
+# ── Common-parameter seeding (D-025) ─────────────────────────────────────────
+# A curated param-name wordlist lets injection test a discovered API path that
+# exposes NO crawlable parameter (a JSON API like /rest/products/search has no
+# HTML form advertising its `q` param, so extract_params() returns () and it would
+# otherwise never be injection-tested). Seeding PAIRS such a path with common param
+# names to produce candidate (url, param) targets. It proposes CANDIDATES only —
+# a finding STILL derives solely from sqlmap/Dalfox confirming injection (D-013);
+# a seeded param that isn't injectable is simply not a finding.
+#
+# The list lives at docker/sandbox/params.txt (the pinned, sha256'd source of
+# truth) and is COPY'd into the sandbox image at /opt/wordlists/params.txt
+# (Dockerfile). The orchestrator runs host-side, so it reads the repo copy here;
+# the sandbox copy exists for parity/reproducibility with the ffuf wordlist.
+_PARAM_WORDLIST_PATH = Path(__file__).resolve().parent.parent / "docker" / "sandbox" / "params.txt"
+_SANDBOX_PARAM_WORDLIST = "/opt/wordlists/params.txt"   # image mirror (documented)
+
+# A path is "API-looking" (hence seedable when param-less) if the crawler tagged it
+# api, or its path carries one of these markers. A static check — no extra requests.
+_API_PATH_MARKERS = ("/api/", "/rest/", "/v1/", "/v2/", "/graphql", "/gql/")
+
+# Path substrings that mark an endpoint as a likely QUERY/SEARCH sink — one that
+# actually consumes a parameter (vs. a plain collection GET). Seeded paths are ranked
+# so these come FIRST, so a tight per-mode path cap still reaches the high-value ones
+# (e.g. /rest/products/SEARCH — the endpoint carrying the injectable `q`).
+_QUERY_PATH_MARKERS = ("search", "query", "find", "lookup", "filter",
+                       "list", "fetch", "get", "products", "users", "orders")
+
+_seed_params_cache: list | None = None
 
 # Non-injectable control inputs — the union of the skip sets modules/sqli.py and
 # modules/xss.py already apply, so a form whose only fields are a submit button
@@ -193,3 +223,151 @@ def select_injection_targets(endpoints, *, limit: int | None = None) -> list[Inj
     if limit is not None and limit >= 0:
         return ranked[:limit]
     return ranked
+
+
+# ── Common-parameter seeding ─────────────────────────────────────────────────
+
+def load_seed_params(limit: int | None = None) -> list[str]:
+    """The curated common-parameter names (docker/sandbox/params.txt), highest-signal
+    first (search/query, then ids, then generic). De-duplicated, blank/comment lines
+    dropped, cached after first read. `limit` caps how many are returned (a scan
+    mode's per-path budget); None = all. Empty list if the file is unreadable
+    (seeding then simply produces nothing — never an error)."""
+    global _seed_params_cache
+    if _seed_params_cache is None:
+        try:
+            lines = _PARAM_WORDLIST_PATH.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        seen: set = set()
+        out: list[str] = []
+        for ln in lines:
+            w = ln.strip()
+            if w and not w.startswith("#") and w not in seen:
+                seen.add(w)
+                out.append(w)
+        _seed_params_cache = out
+    params = _seed_params_cache
+    if limit is not None and limit >= 0:
+        return params[:limit]
+    return list(params)
+
+
+def is_seedable_api_path(endpoint) -> bool:
+    """True if a PARAM-LESS endpoint looks like an API endpoint worth seeding: the
+    crawler tagged it `api`, or its path carries an API marker (/api/, /rest/,
+    /v1|v2/, /graphql). Purely static — no extra request. Gating on "looks like an
+    API" (vs. seeding every param-less page) keeps the seeded surface small and
+    high-signal: an HTML page with no params is usually genuinely param-less, while
+    a JSON API path frequently hides its params from the crawler."""
+    etype = _field(endpoint, "endpoint_type", "") or ""
+    if etype == "api":
+        return True
+    url = _field(endpoint, "url", "") or ""
+    try:
+        path = urlsplit(url).path.lower()
+    except (ValueError, AttributeError):
+        return False
+    probe = path if path.endswith("/") else path + "/"
+    return any(marker in probe for marker in _API_PATH_MARKERS)
+
+
+def _norm_path(url: str) -> str:
+    """scheme://host/path with the query stripped — the identity used to dedupe a
+    seeded path against an already-crawled (param-bearing) target on the same path."""
+    try:
+        p = urlsplit(url)
+        return f"{p.scheme}://{p.netloc}{p.path}"
+    except (ValueError, AttributeError):
+        return url or ""
+
+
+def _batches(seq: list, size: int):
+    size = max(1, int(size))
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _seed_injection_target(url: str, method: str, params: list, endpoint) -> InjectionTarget:
+    """Build ONE seeded InjectionTarget: the path with `params` PACKED into its query
+    string (each =1). Packing lets sqlmap/Dalfox test every seeded param in a SINGLE
+    sandboxed run (they iterate all query params), instead of one run per param —
+    the key to keeping seeding runtime-bounded. endpoint_type='seed' ranks it after
+    every crawled target (crawled params are higher-confidence than a guess)."""
+    parts = urlsplit(url)
+    query = urlencode([(p, "1") for p in params])
+    seeded_url = urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+    cookies = _field(endpoint, "cookies_needed", []) or []
+    return InjectionTarget(
+        url=seeded_url, method=method, param_names=tuple(params),
+        endpoint_type="seed", form_action=None, cookies_needed=tuple(cookies))
+
+
+def _seed_path_rank(url: str) -> tuple:
+    """Ranking key for a seedable path: QUERY/SEARCH-like paths first (they actually
+    consume a param), then by URL for a deterministic, total order. So a tight
+    `max_paths` cap reaches /rest/products/search before /rest/captcha."""
+    path = _norm_path(url).lower()
+    is_query_like = any(m in path for m in _QUERY_PATH_MARKERS)
+    return (0 if is_query_like else 1, url)
+
+
+def build_seed_targets(endpoints, *, param_names, max_paths: int | None = None,
+                       batch_size: int = 20, crawled_target_urls=(),
+                       isolate_top: int = 0) -> list[InjectionTarget]:
+    """Seed common params onto param-LESS, API-looking endpoints -> candidate
+    injection targets.
+
+    An endpoint is seeded when it (a) has NO crawlable parameter, (b) looks like an
+    API path (is_seedable_api_path), and (c) isn't already a crawled injection target.
+    Eligible paths are RANKED (query/search-like first — see _seed_path_rank) then
+    capped to `max_paths` (mode-aware, keeps total sandboxed runs bounded), so a small
+    cap still reaches the high-value endpoints.
+
+    For each kept path, the FIRST `isolate_top` params (highest-signal — `param_names`
+    is already ordered that way) each get their OWN single-param target (a clean
+    `?q=1` URL, nothing else in the query string) — packing many params into one URL
+    can make it harder for sqlmap/Dalfox to cleanly attribute a signal to any ONE of
+    them, especially error-based signals that are sensitive to unexpected extra
+    params or a slow/degraded target. The REMAINING params (after `isolate_top`) are
+    packed together, batched by `batch_size`, as a broader lower-confidence sweep.
+    `isolate_top=0` (default) disables isolation — every param is packed/batched as
+    before. Deterministic. Returns [] when param_names is empty (seeding disabled)."""
+    params = [p for p in (param_names or []) if p]
+    if not params:
+        return []
+    crawled_paths = {_norm_path(u) for u in crawled_target_urls}
+
+    # 1. Collect eligible seedable endpoints, de-duped by normalized path.
+    eligible: list = []
+    seen_paths: set = set()
+    for ep in endpoints or []:
+        if extract_params(ep):                    # already has crawlable params -> tested already
+            continue
+        if not is_seedable_api_path(ep):
+            continue
+        url = _field(ep, "url", "") or ""
+        npath = _norm_path(url)
+        if not npath or npath in crawled_paths or npath in seen_paths:
+            continue
+        seen_paths.add(npath)
+        eligible.append(ep)
+
+    # 2. Rank (query-like first) and cap.
+    eligible.sort(key=lambda e: _seed_path_rank(_field(e, "url", "") or ""))
+    if max_paths is not None and max_paths >= 0:
+        eligible = eligible[:max_paths]
+
+    # 3. Isolated top params (one clean single-param URL each) + the rest packed,
+    #    batched, for each kept path.
+    top_n = max(0, int(isolate_top))
+    isolated_params, batched_params = params[:top_n], params[top_n:]
+    targets: list[InjectionTarget] = []
+    for ep in eligible:
+        url = _field(ep, "url", "") or ""
+        method = (_field(ep, "method", "GET") or "GET").upper()
+        for p in isolated_params:
+            targets.append(_seed_injection_target(url, method, [p], ep))
+        for batch in _batches(batched_params, batch_size):
+            targets.append(_seed_injection_target(url, method, batch, ep))
+    return targets

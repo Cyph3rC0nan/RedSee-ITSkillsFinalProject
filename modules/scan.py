@@ -46,24 +46,27 @@ NOT wired into integration.py's resolver or app.py — that is a later task.
 
 import json
 import os
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from urllib.parse import urljoin, urlsplit
+
 from crawler import crawl
-from engine.params import select_injection_targets
+from engine.params import select_injection_targets, build_seed_targets, load_seed_params
 from engine.agent import run_sqli_agent
 from engine.xss_agent import run_xss_agent
 from engine.finding_map import candidate_to_finding, xss_candidate_to_finding
-from engine.nuclei_agent import run_nuclei_agent, _target_url
+from engine.nuclei_agent import run_nuclei_agent
 from engine.recon_tools import run_httpx, run_tlsx, run_ffuf
 from engine.report_io import (
     write_outputs, _scrub_secrets,
     _nuclei_candidate_dict, _recon_observation_dict,
 )
-from engine.scope import load_scope_config, require_authorization, assert_in_scope
+from engine.scope import load_scope_config, require_authorization, assert_in_scope, ScopeError
 from engine.llm import Usage
 
 try:
@@ -108,42 +111,105 @@ class ScanProfile:
     nuclei_tags: tuple[str, ...] | None
     # Per-scan wall-clock bound for nuclei; None = the nuclei agent's default.
     nuclei_timeout_sec: int | None
+    # ── Discovery loop (D-025) ──
+    # Re-crawl ffuf-discovered paths (not linked from the root) to surface THEIR
+    # params. `max_discovered_paths` caps how many; the crawl of each is BOUNDED to
+    # `discovered_crawl_pages`/`discovered_crawl_depth` (just its immediate surface).
+    discover: bool
+    max_discovered_paths: int
+    discovered_crawl_pages: int
+    discovered_crawl_depth: int
+    # ── Common-parameter seeding (D-025/D-026) ──
+    # Seed common params onto param-LESS API paths. `seed_params`=None means the
+    # whole list; an int caps params/path. `seed_paths` caps how many API paths get
+    # seeded; `seed_batch` = params packed per sandboxed run (one URL) for whatever
+    # isn't isolated. `seed_isolate_top` = the first N (highest-signal) params EACH
+    # get their OWN clean single-param request (e.g. `?q=1`) instead of being packed
+    # with the rest — sqlmap/Dalfox attribute a signal to ONE param far more reliably
+    # that way (D-026: a packed 25-param URL missed a hand-confirmed error-based SQLi
+    # on `q` that a clean `?q=1` request would have hit cleanly). Seeded injection is
+    # always SHALLOW (level 1) — a broad candidate sweep, not a deep audit — so it
+    # stays runtime-bounded regardless of param count (see _SEED_*).
+    seed: bool
+    seed_params: int | None
+    seed_paths: int
+    seed_batch: int
+    seed_isolate_top: int
 
 
 _PROFILES = {
-    # ~2 min: only the top few param-bearing endpoints, a shallow single-rung
-    # injection (level/risk 1, tight timeout, few iterations), and the two cheap
-    # deterministic recon probes only (no nuclei template scan, no ffuf brute-force).
+    # ~2 min: only the top few param-bearing endpoints from the ROOT crawl, a shallow
+    # single-rung injection, and the two cheap deterministic recon probes only. NO
+    # ffuf, so NO discovery loop and NO seeding — fast is a quick look at what the
+    # crawl already sees, nothing more.
     "fast": ScanProfile(
         name="fast", max_injection_targets=5,
         sqli_max_level=1, sqli_max_risk=1, sqli_max_iterations=2, xss_max_iterations=2,
         injection_timeout_sec=60,
         run_httpx=True, run_tlsx=True, run_ffuf=False, run_nuclei=False,
         nuclei_tags=None, nuclei_timeout_sec=None,
+        discover=False, max_discovered_paths=0, discovered_crawl_pages=0, discovered_crawl_depth=0,
+        seed=False, seed_params=0, seed_paths=0, seed_batch=15, seed_isolate_top=0,
     ),
-    # ~5-8 min: ~10 endpoints, medium injection depth, and the full recon set with a
-    # SCOPED, wall-clock-bounded nuclei scan. The template set is memory-bounded by
-    # engine.nuclei_agent (exposures + misconfiguration dirs — the whole corpus OOMs
-    # the 256 MB sandbox); these tags scope within it.
+    # ~5-8 min: ffuf discovery + a BOUNDED re-crawl of discovered paths + a LEAN,
+    # tight common-param seed on the SINGLE highest-signal param-less API path
+    # (query/search-ranked — see engine.params._seed_path_rank), medium injection
+    # depth, and the full recon set with a scoped, memory-bounded nuclei scan.
+    # D-026: right-sized for an 8 GB host running the target itself (Juice Shop) —
+    # a wider seed sweep put real memory pressure on the HOST target's own process
+    # (not just the 256 MB-capped sandbox containers), not just on this box.
     "standard": ScanProfile(
         name="standard", max_injection_targets=10,
         sqli_max_level=3, sqli_max_risk=2, sqli_max_iterations=4, xss_max_iterations=3,
         injection_timeout_sec=120,
         run_httpx=True, run_tlsx=True, run_ffuf=True, run_nuclei=True,
         nuclei_tags=("exposure", "misconfig"), nuclei_timeout_sec=300,
+        # max_discovered_paths 8 -> 4 (D-026 follow-up, live-evidenced): a live run
+        # against a Juice Shop already stressed from repeated same-day testing got
+        # OOM-killed DURING these re-crawls (plain host-side HTTP requests, no
+        # sandbox involved) — every discovered path past the root came back 502.
+        # Fewer re-crawls is pure request-volume reduction against the TARGET's own
+        # process, independent of sandbox/container memory.
+        discover=True, max_discovered_paths=4, discovered_crawl_pages=6, discovered_crawl_depth=1,
+        # top 3 params (q, id, search — the highest-signal names) tested in ISOLATION
+        # (clean single-param requests), the remaining ~22 packed into one batch.
+        seed=True, seed_params=None, seed_paths=1, seed_batch=30, seed_isolate_top=3,
     ),
-    # The pre-mode behavior: every param-bearing endpoint, the agents' own default
-    # caps, the full recon set with nuclei's default profile. "deep unchanged."
+    # Full: every param-bearing endpoint, agent-default injection depth, full recon,
+    # a wider discovery re-crawl, and the full (still lean, 25-name) seed list on a
+    # few more API paths — still bounded, not "every path/param". For a target with
+    # NO extra discoverable paths/params (discover/seed surface nothing), deep ==
+    # the pre-D-025 behavior.
     "deep": ScanProfile(
         name="deep", max_injection_targets=None,
         sqli_max_level=3, sqli_max_risk=2, sqli_max_iterations=6, xss_max_iterations=6,
         injection_timeout_sec=None,
         run_httpx=True, run_tlsx=True, run_ffuf=True, run_nuclei=True,
         nuclei_tags=None, nuclei_timeout_sec=None,
+        discover=True, max_discovered_paths=15, discovered_crawl_pages=20, discovered_crawl_depth=2,
+        seed=True, seed_params=None, seed_paths=3, seed_batch=30, seed_isolate_top=5,
     ),
 }
 
 DEFAULT_MODE = "standard"
+
+# Seeded injection is a SHALLOW candidate sweep (a seeded param is a guess, not a
+# crawled fact): always level 1 / risk 1, few iterations, so each seeded path costs
+# ~one sandboxed run testing all its packed params at once — bounded regardless of
+# how many params are seeded. (A crawled, param-bearing target still gets the mode's
+# full depth.) Deep's extra thoroughness comes from seeding MORE params/paths, not
+# from going deeper per seeded param.
+_SEED_MAX_LEVEL = 1
+_SEED_MAX_RISK = 1
+_SEED_MAX_ITERATIONS = 2
+
+# HARD ceiling on total injection targets (crawled + seeded) dispatched per scan,
+# regardless of mode/profile misconfiguration — the last line of defense against a
+# pathological target (e.g. a future "deep"-like profile with max_injection_targets
+# raised too high, or an unusually param-rich site) spawning dozens of sandboxed
+# sqlmap/Dalfox runs in one scan. Ranking (crawled — real, confirmed params — before
+# seeded — candidate guesses) is preserved when trimming to this ceiling.
+_MAX_TOTAL_INJECTION_TARGETS = 20
 
 
 def resolve_profile(mode) -> ScanProfile:
@@ -156,11 +222,20 @@ def resolve_profile(mode) -> ScanProfile:
 def _max_parallel_sandboxes() -> int:
     """Conservative bound on how many stages (and therefore sandboxes) run at once.
 
-    Default 2 — verified safe live; each concurrent stage spawns at most one sandbox
-    at a time, so at most this many isolated containers/networks coexist. Kept small
-    on purpose: run_in_sandbox sets up per-run iptables egress rules, and stray rules
-    from a KILLED run have collided before, so we do not fan out aggressively.
-    REDSEE_MAX_PARALLEL_SANDBOXES overrides it; 1 = fully serial (the safest)."""
+    Default 2 — each sandboxed tool container is itself capped at 256 MB
+    (engine.sandbox, frozen), so 2 concurrent stages is a bounded, verified-safe
+    ceiling. D-026 tried defaulting this to 1 (fully serial) to address memory
+    pressure on this project's 8 GB host, which also runs the scanned target
+    itself — but live-measured, serial-by-default pushed a standard scan's
+    wall-clock from ~6-7 min to >18 min (timed out) with NO measured memory
+    benefit over just shrinking the seeded work itself (the lean 25-name param
+    list + seed_paths=1/3 + the hard _MAX_TOTAL_INJECTION_TARGETS ceiling below —
+    those cut TOTAL request/container volume, which serial-only concurrency does
+    not). Reverted to 2. Set REDSEE_MAX_PARALLEL_SANDBOXES=1 for the safest,
+    slowest, fully-serial mode on an even more constrained host, or higher on a
+    bigger one. Kept conservative rather than higher by default on purpose:
+    run_in_sandbox sets up per-run iptables egress rules, and stray rules from a
+    KILLED run have collided before."""
     try:
         return max(1, int(os.environ.get("REDSEE_MAX_PARALLEL_SANDBOXES", "2")))
     except (ValueError, TypeError):
@@ -230,26 +305,6 @@ def _classify_results(items: list, positive: str) -> tuple:
 
 # ── Small helpers ───────────────────────────────────────────────────────────
 
-def _live_urls_from_httpx(httpx_observations: list, seed_targets: list) -> list:
-    """ffuf targets: the DISTINCT base URLs httpx actually confirmed live
-    (status="observed"), first-seen order; falls back to the seed targets when
-    httpx found nothing live. Reimplemented locally (not imported from
-    modules.recon) to keep this spine self-contained — same rationale the recon
-    layer uses for reimplementing trivial helpers rather than cross-coupling."""
-    live: list = []
-    seen = set()
-    for o in httpx_observations:
-        if getattr(o, "status", None) != "observed":
-            continue
-        target = getattr(o, "target", None)
-        if target and target not in seen:
-            seen.add(target)
-            live.append(target)
-    if live:
-        return live
-    return [_target_url(t) for t in seed_targets if _target_url(t)]
-
-
 def _severity_rollup(findings: list) -> dict:
     """Counts by Finding severity — all four canonical levels always present."""
     roll = {sev: 0 for sev in _SEVERITIES}
@@ -305,39 +360,169 @@ class _EmptyAgentResult:
 # modules/sqli.py) so it can set per-mode depth/iterations/timeout. injectable is
 # still derived SOLELY from the agents' parsed tool output: only status=="injectable"
 # candidates become Findings (engine.finding_map enforces this), so the evidence
-# gate is intact.
+# gate is intact — this holds for SEEDED candidate params exactly as for crawled
+# ones: a seeded param the tool reports not-injectable never becomes a finding.
+#
+# `crawled` targets carry the mode's FULL injection depth; `seeded` (candidate
+# common params on param-less API paths) get a SHALLOW pass (_SEED_* — level 1,
+# few iterations) so a broad seed sweep stays runtime-bounded. Both feed the ONE
+# "sqli"/"xss" tools_run entry (findings merged); no new tool names.
 
-def _scan_sqli_targets(targets: list, *, scope_config, profile: ScanProfile,
-                       scan_id: str) -> list:
-    """Run the SQLi agent over param-bearing injection targets, map confirmed
-    injections to Findings. Empty target list -> no run, no findings."""
-    if not targets:
-        return []
-    result = run_sqli_agent(
-        list(targets), scope_config=scope_config,
-        max_iterations=profile.sqli_max_iterations,
-        max_level=profile.sqli_max_level, max_risk=profile.sqli_max_risk,
-        timeout_sec=profile.injection_timeout_sec)
-    target_url = getattr(targets[0], "url", "") or ""
-    return [candidate_to_finding(c, target_url=target_url, scan_id=scan_id)
-            for c in result.candidates if c.status == "injectable"]
+def _sqli_candidate_summary(c) -> dict:
+    """A compact, evidence-only summary of ONE SqliCandidate — status/parameter/
+    technique/dbms plus a truncated evidence excerpt — for EVERY candidate tested,
+    not just confirmed ones. Mirrors how recon already exposes clean/error results
+    alongside found ones (D-017); sqli/xss had no equivalent transparency before —
+    a "0 findings" result was a black box with no visibility into what was actually
+    tested or why it came back clean. Never a finding on its own; purely diagnostic."""
+    return {
+        "url": c.endpoint_url, "parameter": c.parameter, "status": c.status,
+        "technique": c.technique, "dbms": c.dbms, "depth": c.depth,
+        "error": c.error, "evidence": (c.evidence or "")[:300],
+    }
 
 
-def _scan_xss_targets(targets: list, *, scope_config, profile: ScanProfile,
-                      scan_id: str) -> list:
-    """Run the XSS agent over param-bearing injection targets, map confirmed
-    reflected XSS to Findings. REDSEE_XSS_COOKIE (if set) is threaded through for
-    authenticated targets, mirroring modules/xss.py."""
-    if not targets:
-        return []
+def _xss_candidate_summary(c) -> dict:
+    return {
+        "url": c.endpoint_url, "parameter": c.parameter, "status": c.status,
+        "context": c.context, "payload": c.payload,
+        "error": c.error, "evidence": (c.evidence or "")[:300],
+    }
+
+
+def _scan_sqli_targets(crawled: list, seeded: list = None, *, scope_config,
+                       profile: ScanProfile, scan_id: str) -> tuple:
+    """SQLi agent over crawled (full depth) + seeded (shallow) injection targets.
+    Returns (findings, candidate_summaries) — the summaries cover EVERY candidate
+    tested (clean/error included), for scan-record transparency (see
+    _sqli_candidate_summary)."""
+    findings: list = []
+    candidates: list = []
+    if crawled:
+        result = run_sqli_agent(
+            list(crawled), scope_config=scope_config,
+            max_iterations=profile.sqli_max_iterations,
+            max_level=profile.sqli_max_level, max_risk=profile.sqli_max_risk,
+            timeout_sec=profile.injection_timeout_sec)
+        tgt = getattr(crawled[0], "url", "") or ""
+        findings += [candidate_to_finding(c, target_url=tgt, scan_id=scan_id)
+                     for c in result.candidates if c.status == "injectable"]
+        candidates += [_sqli_candidate_summary(c) for c in result.candidates]
+    if seeded:
+        result = run_sqli_agent(
+            list(seeded), scope_config=scope_config,
+            max_iterations=_SEED_MAX_ITERATIONS,
+            max_level=_SEED_MAX_LEVEL, max_risk=_SEED_MAX_RISK,
+            timeout_sec=profile.injection_timeout_sec)
+        tgt = getattr(seeded[0], "url", "") or ""
+        findings += [candidate_to_finding(c, target_url=tgt, scan_id=scan_id)
+                     for c in result.candidates if c.status == "injectable"]
+        candidates += [_sqli_candidate_summary(c) for c in result.candidates]
+    return findings, candidates
+
+
+def _scan_xss_targets(crawled: list, seeded: list = None, *, scope_config,
+                      profile: ScanProfile, scan_id: str) -> tuple:
+    """XSS agent over crawled (full depth) + seeded (shallow) targets. REDSEE_XSS_COOKIE
+    (if set) is threaded through for authenticated targets, mirroring modules/xss.py.
+    Returns (findings, candidate_summaries) — see _scan_sqli_targets."""
     auth_cookie = os.environ.get("REDSEE_XSS_COOKIE") or None
-    result = run_xss_agent(
-        list(targets), scope_config=scope_config,
-        max_iterations=profile.xss_max_iterations,
-        auth_cookie=auth_cookie, timeout_sec=profile.injection_timeout_sec)
-    target_url = getattr(targets[0], "url", "") or ""
-    return [xss_candidate_to_finding(c, target_url=target_url, scan_id=scan_id)
-            for c in result.candidates if c.status == "injectable"]
+    findings: list = []
+    candidates: list = []
+    if crawled:
+        result = run_xss_agent(
+            list(crawled), scope_config=scope_config,
+            max_iterations=profile.xss_max_iterations,
+            auth_cookie=auth_cookie, timeout_sec=profile.injection_timeout_sec)
+        tgt = getattr(crawled[0], "url", "") or ""
+        findings += [xss_candidate_to_finding(c, target_url=tgt, scan_id=scan_id)
+                     for c in result.candidates if c.status == "injectable"]
+        candidates += [_xss_candidate_summary(c) for c in result.candidates]
+    if seeded:
+        result = run_xss_agent(
+            list(seeded), scope_config=scope_config,
+            max_iterations=_SEED_MAX_ITERATIONS,
+            auth_cookie=auth_cookie, timeout_sec=profile.injection_timeout_sec)
+        tgt = getattr(seeded[0], "url", "") or ""
+        findings += [xss_candidate_to_finding(c, target_url=tgt, scan_id=scan_id)
+                     for c in result.candidates if c.status == "injectable"]
+        candidates += [_xss_candidate_summary(c) for c in result.candidates]
+    return findings, candidates
+
+
+# ── Discovery helpers ────────────────────────────────────────────────────────
+
+def _discovered_urls_from_ffuf(ffuf_obs: list) -> list:
+    """The distinct URLs ffuf discovered (content-discovery hits), first-seen order.
+    Each ffuf ReconObservation records the hit path in its `evidence` (`path=<p> ...`);
+    reconstruct the absolute URL as urljoin(base, path). These are top-level paths the
+    ROOT crawl can't reach because nothing links to them (e.g. /market) — the discovery
+    loop re-crawls them to surface their params."""
+    urls: list = []
+    seen: set = set()
+    for o in ffuf_obs:
+        if getattr(o, "status", None) != "observed":
+            continue
+        if getattr(o, "category", None) != "content-discovery":
+            continue
+        evidence = getattr(o, "evidence", "") or ""
+        m = re.search(r"path=(\S+)", evidence)
+        if not m:
+            continue
+        base = getattr(o, "target", None) or ""
+        url = urljoin(base, m.group(1))
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+# Static/leaf markers that rarely hide further crawlable APP surface: known static
+# files (a security policy, robots directive, a hashed bundle) and generic static-
+# asset directory names common across real webapps (not Juice-Shop-specific) — a
+# hit on these is far more likely to be a plain file server than a dynamic app
+# section with its own links/forms/params.
+_DISCOVERY_STATIC_LEAF_MARKERS = (
+    ".well-known", "robots.txt", "security.txt", "favicon", "sitemap",
+    "humans.txt", "manifest.json", "browserconfig.xml",
+    "assets", "static", "media", "images", "img", "css", "js", "fonts",
+    "uploads", "downloads", "backup", "backups", "cache", "tmp", "temp",
+    "logs", "log", "video", "videos", "ftp",
+)
+
+
+def _discovery_path_rank(url: str) -> tuple:
+    """Ranking key for a DISCOVERED (ffuf) path when capping discovery-loop
+    re-crawls (mode-bounded, so which paths get the cheap slots matters): a short,
+    extension-less, non-static-leaf path (e.g. `/market`) is far more likely to be a
+    real APP SECTION worth re-crawling than a known static leaf file (`.well-known/
+    security.txt`, `favicon.ico`) or a deep/file-looking one — those rarely reveal
+    further links/forms/params. Ascending sort = higher priority first: non-leaf
+    before leaf, no-extension before extension, shallower before deeper, then URL
+    for a total, deterministic (never random) order."""
+    try:
+        path = urlsplit(url).path.strip("/")
+    except (ValueError, AttributeError):
+        path = url or ""
+    lowered = path.lower()
+    is_static_leaf = any(m in lowered for m in _DISCOVERY_STATIC_LEAF_MARKERS)
+    segments = [s for s in path.split("/") if s]
+    has_ext = bool(segments) and "." in segments[-1]
+    return (1 if is_static_leaf else 0, 1 if has_ext else 0, len(segments), url)
+
+
+def _endpoint_paths(endpoints: list) -> set:
+    """The set of normalized scheme://host/path for a list of endpoints — used to skip
+    re-crawling a discovered path the root crawl already covers."""
+    out: set = set()
+    for e in endpoints:
+        url = getattr(e, "url", "") or ""
+        try:
+            p = urlsplit(url)
+            out.add(f"{p.scheme}://{p.netloc}{p.path}")
+        except (ValueError, AttributeError):
+            continue
+    return out
 
 
 # ── Orchestrator ────────────────────────────────────────────────────────────
@@ -372,12 +557,17 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
     require_authorization + assert_in_scope. An unauthorized or out-of-scope
     target raises ScopeError and NOTHING is written (no partial run).
 
-    Injection runs ONLY on param-bearing endpoints (engine.params) — a param-less
-    endpoint is never handed to sqlmap/Dalfox. Independent tools (sqli, xss, nuclei,
-    httpx, tlsx) run CONCURRENTLY under a conservative sandbox-parallelism bound;
-    ffuf runs after httpx (it is chained off httpx's live URLs). Each stage is
-    wrapped so a single stage's failure is an "error" tools_run entry and the scan
-    continues; a failed stage contributes no findings/observations (never fabricated).
+    Flow is DISCOVERY-FIRST (D-025): crawl the root, then ffuf + httpx run BEFORE
+    injection so discovered paths feed it — each ffuf-discovered path (not linked
+    from the root) is re-crawled (bounded, scope-checked) to surface its params, and
+    param-LESS API paths are SEEDED with common param names (engine.params) so a JSON
+    API endpoint the crawler can't read params off (e.g. /rest/products/search?q=)
+    still gets injection-tested. Injection then runs on crawled (full-depth) + seeded
+    (shallow) targets, concurrently with nuclei/tlsx. Seeding proposes CANDIDATES
+    only — a finding still derives solely from the tool confirming injection on that
+    (url, param). Discovery/seeding are mode-bounded (fast: off; standard: moderate;
+    deep: full). Each stage is wrapped so a single failure is an "error" tools_run
+    entry and the scan continues; nothing is fabricated.
 
     Returns the unified record dict (also written to outputs/scan_<id>.json).
     """
@@ -398,85 +588,157 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
     tool_status: dict = {}          # name -> (status, count, detail), assembled in
                                     # _TOOL_ORDER at the end regardless of finish order
 
-    # 3. Crawl -> endpoints (serial: injection-target selection depends on it).
+    # 3. Crawl the ROOT -> seed endpoints (serial; discovery/injection depend on it).
     res, err = _safe(lambda: crawl(target_url))
     if err is not None:
         endpoints: list = []
-        tool_status["crawl"] = ("error", 0, err)
+        crawl_error = err
     else:
         endpoints = list(res.endpoints)
-        tool_status["crawl"] = ("ran", len(endpoints), f"{len(endpoints)} endpoints")
+        crawl_error = None
+    root_endpoint_count = len(endpoints)
 
-    # 4. Injection targets: param-bearing endpoints only, deterministically ranked
-    #    and capped to the mode's breadth. Param-less endpoints are excluded here
-    #    (they can't be injected — wasted sandbox time), so sqlmap/Dalfox only ever
-    #    see real parameters.
-    injection_targets = select_injection_targets(
-        endpoints, limit=profile.max_injection_targets)
+    # 4. DISCOVERY (before injection): ffuf + httpx run concurrently. ffuf discovers
+    #    top-level paths the ROOT crawl can't reach (nothing links to them, e.g.
+    #    /market); httpx confirms reachability (also feeds the skip reason below).
+    disc_stages: dict = {}
+    if profile.run_httpx:
+        disc_stages["httpx"] = lambda: run_httpx([target_url], scope_config=scope_config)
+    if profile.run_ffuf:
+        disc_stages["ffuf"] = lambda: run_ffuf([target_url], scope_config=scope_config)
+    disc_results = _run_stages(disc_stages, max_parallel)
 
-    # 5. Assemble the independent stages for this mode. Each is a zero-arg callable
-    #    executed concurrently (bounded). ffuf is NOT here — it is chained off httpx.
-    stages: dict = {}
-    if injection_targets:
-        stages["sqli"] = lambda: _scan_sqli_targets(
-            injection_targets, scope_config=scope_config, profile=profile, scan_id=scan_id)
-        stages["xss"] = lambda: _scan_xss_targets(
-            injection_targets, scope_config=scope_config, profile=profile, scan_id=scan_id)
+    httpx_obs: list = []
+    if "httpx" in disc_stages:
+        res, err = disc_results["httpx"]
+        if err is not None:
+            tool_status["httpx"] = ("error", 0, err)
+        else:
+            httpx_obs = list(res or [])
+            tool_status["httpx"] = _classify_results(httpx_obs, "observed")
+    else:
+        tool_status["httpx"] = ("skipped", 0, f"disabled in {profile.name} profile")
+
+    ffuf_obs: list = []
+    if "ffuf" in disc_stages:
+        res, err = disc_results["ffuf"]
+        if err is not None:
+            tool_status["ffuf"] = ("error", 0, err)
+        else:
+            ffuf_obs = list(res or [])
+            tool_status["ffuf"] = _classify_results(ffuf_obs, "observed")
+    else:
+        tool_status["ffuf"] = ("skipped", 0, f"disabled in {profile.name} profile")
+
+    # 5. DISCOVERY LOOP: re-crawl each ffuf-discovered path not already covered —
+    #    BOUNDED (mode caps + a shallow per-path crawl) and SCOPE-CHECKED on every
+    #    fetch — to surface its links/forms/query params for injection. RANKED
+    #    (_discovery_path_rank) before the cap so a tight max_discovered_paths still
+    #    reaches likely app sections (e.g. /market) over static leaf files ffuf's
+    #    raw hit order would otherwise let crowd out the cheap slots.
+    discovered_urls = _discovered_urls_from_ffuf(ffuf_obs)
+    discovered_urls_ranked = sorted(discovered_urls, key=_discovery_path_rank)
+    paths_recrawled = 0
+    if profile.discover and discovered_urls_ranked:
+        covered = _endpoint_paths(endpoints)
+        for durl in discovered_urls_ranked:
+            if paths_recrawled >= profile.max_discovered_paths:
+                break
+            try:                                   # discovery NEVER leaves the allow-list
+                assert_in_scope(durl, scope_config)
+            except ScopeError:
+                continue
+            try:
+                npath = urlsplit(durl)
+                npath = f"{npath.scheme}://{npath.netloc}{npath.path}"
+            except (ValueError, AttributeError):
+                continue
+            if npath in covered:
+                continue
+            covered.add(npath)
+            r, e = _safe(lambda u=durl: crawl(
+                u, max_pages=profile.discovered_crawl_pages,
+                max_depth=profile.discovered_crawl_depth))
+            if e is None and r is not None:
+                new_eps = list(r.endpoints)
+                endpoints.extend(new_eps)
+                covered |= _endpoint_paths(new_eps)
+                paths_recrawled += 1
+
+    # Record crawl status now (reflecting the discovery-loop re-crawls too).
+    if crawl_error is not None:
+        tool_status["crawl"] = ("error", 0, crawl_error)
+    else:
+        detail = f"{len(endpoints)} endpoints"
+        if paths_recrawled:
+            detail += (f" ({root_endpoint_count} from root + {paths_recrawled} "
+                       f"discovered path(s))")
+        tool_status["crawl"] = ("ran", len(endpoints), detail)
+
+    # 6. Build injection targets:
+    #    * crawled — param-bearing endpoints (from the root + discovered-path crawls),
+    #      deterministically ranked + capped; tested at the mode's FULL depth.
+    #    * seeded — common params paired onto param-LESS API paths (engine.params),
+    #      tested SHALLOW. A seeded param is a candidate: a finding still derives
+    #      solely from the tool confirming injection on that (url, param).
+    crawled_targets = select_injection_targets(endpoints, limit=profile.max_injection_targets)
+    seeded_targets: list = []
+    if profile.seed:
+        seed_names = load_seed_params(profile.seed_params)
+        seeded_targets = build_seed_targets(
+            endpoints, param_names=seed_names, max_paths=profile.seed_paths,
+            batch_size=profile.seed_batch, isolate_top=profile.seed_isolate_top,
+            crawled_target_urls=[t.url for t in crawled_targets])
+
+    # HARD ceiling — the last line of defense against a pathological target/profile
+    # spawning too many sandboxed injection runs in one scan (see
+    # _MAX_TOTAL_INJECTION_TARGETS). Crawled (real, confirmed params) are trimmed
+    # last — seeded (candidate guesses) give way first if the total is over budget.
+    total_targets = len(crawled_targets) + len(seeded_targets)
+    if total_targets > _MAX_TOTAL_INJECTION_TARGETS:
+        seed_budget = max(0, _MAX_TOTAL_INJECTION_TARGETS - len(crawled_targets))
+        seeded_targets = seeded_targets[:seed_budget]
+        crawled_targets = crawled_targets[:_MAX_TOTAL_INJECTION_TARGETS]
+
+    # 7. INJECTION + remaining recon (nuclei, tlsx) — concurrent, bounded. sqli/xss
+    #    each test crawled (full depth) + seeded (shallow) in ONE stage.
+    inj_stages: dict = {}
+    if crawled_targets or seeded_targets:
+        inj_stages["sqli"] = lambda: _scan_sqli_targets(
+            crawled_targets, seeded_targets, scope_config=scope_config,
+            profile=profile, scan_id=scan_id)
+        inj_stages["xss"] = lambda: _scan_xss_targets(
+            crawled_targets, seeded_targets, scope_config=scope_config,
+            profile=profile, scan_id=scan_id)
     if profile.run_nuclei:
         _nuclei_cookie = os.environ.get("REDSEE_NUCLEI_COOKIE") or None
         _nuclei_tags = list(profile.nuclei_tags) if profile.nuclei_tags else None
-        stages["nuclei"] = lambda: run_nuclei_agent(
+        inj_stages["nuclei"] = lambda: run_nuclei_agent(
             [target_url], scope_config=scope_config, default_tags=_nuclei_tags,
             timeout_sec=profile.nuclei_timeout_sec, auth_cookie=_nuclei_cookie)
-    if profile.run_httpx:
-        stages["httpx"] = lambda: run_httpx([target_url], scope_config=scope_config)
     if profile.run_tlsx:
-        stages["tlsx"] = lambda: run_tlsx([target_url], scope_config=scope_config)
+        inj_stages["tlsx"] = lambda: run_tlsx([target_url], scope_config=scope_config)
 
-    results = _run_stages(stages, max_parallel)
+    inj_results = _run_stages(inj_stages, max_parallel)
 
-    # 6. Classify each stage into tool_status + collect its output.
-    #    httpx/tlsx are classified FIRST (moved ahead of sqli/xss, unchanged logic)
-    #    purely so their reachability signal is available when building the sqli/xss
-    #    skip reason below — httpx runs unconditionally in every mode, so it is a
-    #    reliable "did the target answer at all" check independent of the crawler.
-    httpx_obs: list = []
     tlsx_obs: list = []
-    for name in ("httpx", "tlsx"):
-        if name not in stages:
-            tool_status[name] = ("skipped", 0, f"disabled in {profile.name} profile")
-            continue
-        res, err = results[name]
+    if "tlsx" in inj_stages:
+        res, err = inj_results["tlsx"]
         if err is not None:
-            tool_status[name] = ("error", 0, err)
+            tool_status["tlsx"] = ("error", 0, err)
         else:
-            obs = list(res or [])
-            tool_status[name] = _classify_results(obs, "observed")
-            if name == "httpx":
-                httpx_obs = obs
-            else:
-                tlsx_obs = obs
+            tlsx_obs = list(res or [])
+            tool_status["tlsx"] = _classify_results(tlsx_obs, "observed")
+    else:
+        tool_status["tlsx"] = ("skipped", 0, f"disabled in {profile.name} profile")
 
-    # Injection (sqli/xss): skipped cleanly when there is nothing param-bearing to
-    # test — this is CORRECT, D-024 behavior (a param-less endpoint is never handed
-    # to sqlmap/Dalfox), never changed here. What changes is making WHY legible: a
-    # bare "skipped" conflates three materially different operator situations, so
-    # the reason is now one of three distinct messages (never affects the skip
-    # condition itself, `if injection_targets: stages[...]` above is untouched):
-    #   * crawl found endpoints, but NONE carry a parameter -> genuinely nothing to
-    #     inject (path-only APIs, static pages, a client-rendered SPA).
-    #   * crawl found ZERO endpoints AND httpx never got a live response either ->
-    #     the target looks properly unreachable (connection refused/DNS/timeout) —
-    #     a connectivity problem, not a scan decision.
-    #   * crawl found ZERO endpoints but httpx DID get a response (even an error
-    #     status, e.g. a gateway's 502 while its backend is down) -> the target
-    #     answered at the HTTP level but crawl couldn't discover anything — an
-    #     app-level failure, materially different from "reachable, just no params."
+    # Injection (sqli/xss): a "skipped" here means there was nothing to inject — no
+    # crawled param AND nothing seedable — CORRECT behavior, made legible with a
+    # 3-way reason (uses httpx's reachability, gathered in the discovery phase).
     httpx_reached = any(getattr(o, "status", None) == "observed" for o in httpx_obs)
     if endpoints:
-        inj_skip = (f"crawled {len(endpoints)} endpoint(s); none carry an "
-                    f"injectable parameter (path-only APIs / static pages) — "
-                    f"nothing to inject")
+        inj_skip = (f"crawled {len(endpoints)} endpoint(s); none carry an injectable "
+                    f"parameter and no param-less API path was seedable — nothing to inject")
     elif httpx_reached:
         inj_skip = ("target responded (see httpx/tlsx recon below) but crawl "
                     "discovered 0 endpoints — possible app-level failure behind "
@@ -488,28 +750,32 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
 
     sqli_findings: list = []
     xss_findings: list = []
+    sqli_candidates: list = []
+    xss_candidates: list = []
     for name in ("sqli", "xss"):
-        if name not in stages:
+        if name not in inj_stages:
             tool_status[name] = ("skipped", 0, inj_skip)
             continue
-        res, err = results[name]
+        res, err = inj_results[name]
         if err is not None:
             tool_status[name] = ("error", 0, err)
         else:
-            found = list(res or [])
+            found, cands = res if res else ([], [])
+            found = list(found or [])
             tool_status[name] = ("ran", len(found), f"{len(found)} finding(s)")
             if name == "sqli":
                 sqli_findings = found
+                sqli_candidates = list(cands or [])
             else:
                 xss_findings = found
+                xss_candidates = list(cands or [])
 
-    # nuclei
     nuclei_result = None
     nuclei_candidates: list = []
-    if "nuclei" not in stages:
+    if "nuclei" not in inj_stages:
         tool_status["nuclei"] = ("skipped", 0, f"disabled in {profile.name} profile")
     else:
-        res, err = results["nuclei"]
+        res, err = inj_results["nuclei"]
         if err is not None:
             tool_status["nuclei"] = ("error", 0, err)
         else:
@@ -517,22 +783,13 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
             nuclei_candidates = list(res.candidates)
             tool_status["nuclei"] = _classify_results(nuclei_candidates, "found")
 
-    # 7. ffuf — chained off httpx's LIVE URLs, so it runs after the concurrent pool.
-    ffuf_obs: list = []
-    if not profile.run_ffuf:
-        tool_status["ffuf"] = ("skipped", 0, f"disabled in {profile.name} profile")
-    else:
-        ffuf_targets = _live_urls_from_httpx(httpx_obs, [target_url])
-        res, err = _safe(lambda: run_ffuf(ffuf_targets, scope_config=scope_config))
-        if err is not None:
-            tool_status["ffuf"] = ("error", 0, err)
-        else:
-            ffuf_obs = list(res or [])
-            tool_status["ffuf"] = _classify_results(ffuf_obs, "observed")
-
     findings = sqli_findings + xss_findings
     recon_observations = httpx_obs + tlsx_obs + ffuf_obs
     finished_at = _ts()
+
+    # Discovery/seeding transparency for the operator.
+    seeded_api_paths = len({t.url.split("?", 1)[0] for t in seeded_targets})
+    params_seeded = len({p for t in seeded_targets for p in t.param_names})
 
     # tools_run assembled in a FIXED order (independent of concurrent finish order).
     tools_run: list = []
@@ -554,7 +811,7 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
         recon_observations=recon_observations,
     )
 
-    # 7. Unified record. Tool sections reuse report_io's OWN serializers, so the
+    # 9. Unified record. Tool sections reuse report_io's OWN serializers, so the
     #    shapes match nuclei_<id>.json / recon_<id>.json exactly. Secret-scrubbed
     #    with report_io's scrubber, same as run_<id>.json.
     observed = sum(1 for o in recon_observations if getattr(o, "status", None) == "observed")
@@ -571,12 +828,34 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
             "nuclei": [_nuclei_candidate_dict(c) for c in nuclei_candidates],
             "observations": [_recon_observation_dict(o) for o in recon_observations],
         },
+        # EVERY sqli/xss candidate actually tested (clean/error included, not just
+        # confirmed findings) — evidence-only diagnostic transparency, mirroring how
+        # recon already exposes clean/error results alongside found ones (D-017).
+        # Lets an operator see WHY a target came back clean (wrong technique tried,
+        # sandbox error, ...) instead of a "0 findings" black box.
+        "injection_candidates": {
+            "sqli": sqli_candidates,
+            "xss": xss_candidates,
+        },
+        # Discovery→injection loop transparency: "discovered N, re-crawled M, seeded
+        # P params on Q API paths, tested T injection targets".
+        "discovery": {
+            "paths_discovered": len(discovered_urls),
+            "paths_recrawled": paths_recrawled,
+            "endpoints_from_root": root_endpoint_count,
+            "endpoints_total": len(endpoints),
+            "params_from_crawl": len(crawled_targets),
+            "seeded_api_paths": seeded_api_paths,
+            "params_seeded": params_seeded,
+            "seed_targets": len(seeded_targets),
+            "injection_targets_tested": len(crawled_targets) + len(seeded_targets),
+        },
         # Effective caps this mode applied — so a reader can see exactly how the scan
-        # was tuned (endpoints crawled vs. injected, injection depth, recon selection).
+        # was tuned (endpoints crawled vs. injected, injection depth, discovery/seeding).
         "caps": {
             "mode": profile.name,
             "endpoints_crawled": len(endpoints),
-            "injection_targets_selected": len(injection_targets),
+            "injection_targets_selected": len(crawled_targets),
             "max_injection_targets": profile.max_injection_targets,
             "sqli_max_level": profile.sqli_max_level,
             "sqli_max_risk": profile.sqli_max_risk,
@@ -586,6 +865,13 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
             "recon": {"httpx": profile.run_httpx, "tlsx": profile.run_tlsx,
                       "ffuf": profile.run_ffuf, "nuclei": profile.run_nuclei},
             "nuclei_tags": list(profile.nuclei_tags) if profile.nuclei_tags else None,
+            "discover": profile.discover,
+            "max_discovered_paths": profile.max_discovered_paths,
+            "seed": profile.seed,
+            "seed_params": profile.seed_params,
+            "seed_paths": profile.seed_paths,
+            "seed_inject_max_level": _SEED_MAX_LEVEL,
+            "max_total_injection_targets": _MAX_TOTAL_INJECTION_TARGETS,
             "max_parallel_sandboxes": max_parallel,
         },
         "summary": {
@@ -594,7 +880,10 @@ def run_scan(target_url: str, *, scope_config=None, scan_id: str | None = None,
             "findings_by_severity": _severity_rollup(findings),
             "recon_observations": observed,
             "endpoints_crawled": len(endpoints),
-            "injection_targets": len(injection_targets),
+            "injection_targets": len(crawled_targets) + len(seeded_targets),
+            "params_seeded": params_seeded,
+            "seeded_api_paths": seeded_api_paths,
+            "paths_discovered": len(discovered_urls),
             "tools_ok": sum(1 for t in tools_run if t["status"] == "ran"),
             "tools_error": sum(1 for t in tools_run if t["status"] == "error"),
             "tools_skipped": sum(1 for t in tools_run if t["status"] == "skipped"),
