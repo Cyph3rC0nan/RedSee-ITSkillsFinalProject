@@ -24,15 +24,37 @@ function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+// Console clock reads Azerbaijan Standard Time (Asia/Baku, UTC+4, no DST since
+// 2016) via the IANA tz database rather than a hardcoded offset, so it stays
+// correct even if the zone's rules ever change.
+const CONSOLE_TZ = "Asia/Baku";
+const _clockFmt = new Intl.DateTimeFormat("en-GB", {
+  timeZone: CONSOLE_TZ, hour12: false,
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
 function fmtClock(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  const parts = _clockFmt.formatToParts(d);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return `${get("hour")}:${get("minute")}:${get("second")}`;
 }
 function fmtTime(iso) {
   if (!iso) return "—";
-  // Stored as "YYYY-MM-DDTHH:MM:SSZ" — show HH:MM:SS UTC, drop the date if today.
-  const m = /T(\d{2}:\d{2}:\d{2})/.exec(iso);
-  return m ? m[1] : iso;
+  // Every timestamp the backend sends is either UTC+Z (scan/finding times —
+  // storage/scan_store.py, schemas.Finding) or carries its OWN explicit
+  // offset (Wazuh event timestamps, e.g. "...+0200" — log_ingestor.py passes
+  // the SIEM's raw timestamp through as-is). The OLD code just regex-grabbed
+  // the HH:MM:SS substring verbatim, which showed whatever offset the source
+  // happened to be in — UTC for scans, the Wazuh server's own zone for
+  // events — never Baku. Parse it as a real Date (which correctly resolves
+  // either kind of explicit offset) and render it in the SAME Asia/Baku zone
+  // as the topbar clock, so every time in the console reads consistently.
+  // A string with NO offset at all (rare/defensive case) would otherwise be
+  // parsed as browser-local time, which varies by operator — treat that as
+  // UTC instead, so the result is deterministic regardless of the browser.
+  const hasOffset = /Z$|[+-]\d{2}:?\d{2}$/.test(iso);
+  const d = new Date(hasOffset ? iso : iso + "Z");
+  if (isNaN(d)) return iso;   // unparseable — show the raw value rather than "—"
+  return fmtClock(d);
 }
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -458,13 +480,21 @@ const OLLAMA_DEFAULT_URL = "http://localhost:11434/v1";
 function initSettings() {
   $$("input[name='provider']").forEach((r) =>
     r.addEventListener("change", () => applyProviderUI(r.value)));
+  $$("input[name='wazuh_source']").forEach((r) =>
+    r.addEventListener("change", () => applyWazuhSourceUI(r.value)));
   $("#saveSettingsBtn").addEventListener("click", saveSettings);
   $("#testSettingsBtn").addEventListener("click", testSettings);
+  $("#testWazuhBtn").addEventListener("click", testWazuhSettings);
 }
 
 function currentProvider() {
   const r = $("input[name='provider']:checked");
   return r ? r.value : "external";
+}
+
+function currentWazuhSource() {
+  const r = $("input[name='wazuh_source']:checked");
+  return r ? r.value : "file";
 }
 
 function applyProviderUI(provider) {
@@ -473,6 +503,14 @@ function applyProviderUI(provider) {
   const base = $("#setBaseUrl");
   if (local && !base.value.trim()) base.value = OLLAMA_DEFAULT_URL;
   if (!local && base.value.trim() === OLLAMA_DEFAULT_URL) base.value = "";
+}
+
+function applyWazuhSourceUI(source) {
+  const isApi = source === "api";
+  $("#wazuhPathField").hidden = isApi;
+  $("#wazuhApiUrlField").hidden = !isApi;
+  $("#wazuhApiUserField").hidden = !isApi;
+  $("#wazuhApiPassField").hidden = !isApi;
 }
 
 function fillSettings(s) {
@@ -493,6 +531,19 @@ function fillSettings(s) {
   const tag = $("#llmStatusTag");
   tag.textContent = s.configured ? "ready" : "unconfigured";
   tag.classList.toggle("tag-ready", !!s.configured);
+
+  const wsrc = s.wazuh_source === "api" ? "api" : "file";
+  const wradio = $(`input[name='wazuh_source'][value='${wsrc}']`);
+  if (wradio) wradio.checked = true;
+  $("#setWazuhPath").value = s.wazuh_path || "";
+  $("#setWazuhApiUrl").value = s.wazuh_api_url || "";
+  $("#setWazuhApiUser").value = s.wazuh_api_user || "";
+  $("#setWazuhApiPass").value = "";
+  $("#wazuhApiPassHint").textContent = s.wazuh_api_pass_set ? `(current: ${s.wazuh_api_pass_hint})` : "(none set)";
+  applyWazuhSourceUI(wsrc);
+  const wtag = $("#wazuhStatusTag");
+  wtag.textContent = s.wazuh_configured ? "ready" : "unconfigured";
+  wtag.classList.toggle("tag-ready", !!s.wazuh_configured);
 }
 
 async function loadSettings() {
@@ -516,9 +567,15 @@ function gatherSettings() {
     max_parallel: $("#setMaxParallel").value.trim(),
     price_in: $("#setPriceIn").value.trim(),
     price_out: $("#setPriceOut").value.trim(),
+    wazuh_source: currentWazuhSource(),
+    wazuh_path: $("#setWazuhPath").value.trim(),
+    wazuh_api_url: $("#setWazuhApiUrl").value.trim(),
+    wazuh_api_user: $("#setWazuhApiUser").value.trim(),
   };
   const key = $("#setApiKey").value;   // blank => backend keeps the current key
   if (key) p.api_key = key;
+  const wpass = $("#setWazuhApiPass").value;   // blank => backend keeps the current password
+  if (wpass) p.wazuh_api_pass = wpass;
   return p;
 }
 
@@ -549,6 +606,21 @@ async function testSettings() {
     note("settingsNote", r.detail || (r.ok ? "Reachable." : "Not reachable."), r.ok ? "ok" : "err");
   } catch (e) {
     note("settingsNote", e.message || "Test failed.", "err");
+  } finally { btn.disabled = false; btn.textContent = prev; }
+}
+
+async function testWazuhSettings() {
+  const btn = $("#testWazuhBtn"); const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Testing…";
+  note("wazuhSettingsNote", "Reaching the Wazuh API…", "info");
+  try {
+    const r = await api("/api/settings/test-wazuh", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gatherSettings()),
+    });
+    note("wazuhSettingsNote", r.detail || (r.ok ? "Reachable." : "Not reachable."), r.ok ? "ok" : "err");
+  } catch (e) {
+    note("wazuhSettingsNote", e.message || "Test failed.", "err");
   } finally { btn.disabled = false; btn.textContent = prev; }
 }
 

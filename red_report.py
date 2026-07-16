@@ -206,20 +206,29 @@ def markdown_to_pdf(md_text: str, css_file: str, output_path: str) -> str:
     return output_path
 
 
-# ── Deterministic report (no LLM call, weasyprint OPTIONAL) ──────────────────
+# ── Deterministic report (no LLM call, PDF-only) ──────────────────────────────
 # generate_red_report() above ALWAYS needs a working LLM call (call_llm) AND
 # weasyprint — a two-part dependency that fails closed the moment either is
 # unavailable/misconfigured (no API key, no network, no system libs). The
 # generator below builds the SAME kind of structured report directly from the
-# scan's own data (deterministic string templates, not an LLM), and renders it
-# via weasyprint when available or plain HTML when not (`markdown` — used here —
-# is a lightweight pure-Python package, already a hard dependency of this module).
-# This is the path app.py's /scan/<id>/report route calls: it must ALWAYS
-# produce a real, downloadable file, never a dead click.
+# scan's own data (deterministic string templates, not an LLM). Reports are
+# PDF-only: weasyprint is a hard requirement here (`pip install weasyprint`,
+# needs system pango/cairo/gdk-pixbuf), and this function raises a clear error
+# rather than silently degrading to an HTML file if it's missing — an operator
+# should get one unambiguous, professional deliverable, not two possible formats.
 
 def _render_report(md_text: str, css_file: str, output_path_stem: str) -> tuple[str, str]:
-    """Render `md_text` to a PDF (weasyprint, when importable) or a self-contained
-    HTML file (always available). Returns (output_path, "pdf"|"html")."""
+    """Render `md_text` to a PDF via weasyprint. Returns (output_path, "pdf").
+
+    Raises RuntimeError if weasyprint isn't importable in this environment —
+    PDF is the only supported output format.
+    """
+    if not _HAS_WEASYPRINT:
+        raise RuntimeError(
+            "PDF generation requires weasyprint, which is not installed/importable "
+            "in this environment (pip install weasyprint; needs system libs "
+            "pango/cairo/gdk-pixbuf). Reports are PDF-only — there is no HTML fallback."
+        )
     html_content = markdown.markdown(
         md_text, extensions=["tables", "fenced_code", "toc", "nl2br"])
     css_path = TEMPLATES_DIR / css_file
@@ -237,18 +246,9 @@ def _render_report(md_text: str, css_file: str, output_path_stem: str) -> tuple[
     </div>
 </body>
 </html>"""
-    if _HAS_WEASYPRINT:
-        output_path = f"{output_path_stem}.pdf"
-        weasyprint.HTML(string=full_html).write_pdf(output_path)
-        return output_path, "pdf"
-    # No weasyprint — write plain HTML instead. red.css's @page rules (paged-media
-    # headers/footers) are weasyprint-specific and browsers simply ignore them, so
-    # the SAME stylesheet still renders a clean, readable page; the operator can
-    # use their browser's own Print -> Save as PDF for a physical PDF if they want
-    # one.
-    output_path = f"{output_path_stem}.html"
-    Path(output_path).write_text(full_html, encoding="utf-8")
-    return output_path, "html"
+    output_path = f"{output_path_stem}.pdf"
+    weasyprint.HTML(string=full_html).write_pdf(output_path)
+    return output_path, "pdf"
 
 
 def _fmt_ts(iso: str | None) -> str:
@@ -260,10 +260,59 @@ def _fmt_ts(iso: str | None) -> str:
         return iso
 
 
+# OWASP Top 10 (2021) + CWE mapping for each frozen Finding.type (schemas.py:
+# "SQLi" | "XSS" | "IDOR" | "BrokenAuth"). Presentation/citation only — it never
+# changes which findings exist or their severity, only how they're labeled
+# against an industry-standard taxonomy a reviewer will recognize.
+_OWASP_MAP = {
+    "SQLi": {
+        "owasp": "A03:2021 – Injection",
+        "cwe": "CWE-89: SQL Injection",
+    },
+    "XSS": {
+        "owasp": "A03:2021 – Injection",
+        "cwe": "CWE-79: Improper Neutralization of Input During Web Page Generation (XSS)",
+    },
+    "IDOR": {
+        "owasp": "A01:2021 – Broken Access Control",
+        "cwe": "CWE-639: Authorization Bypass Through User-Controlled Key (IDOR)",
+    },
+    "BrokenAuth": {
+        "owasp": "A07:2021 – Identification and Authentication Failures",
+        "cwe": "CWE-287: Improper Authentication",
+    },
+}
+
+
+def _owasp_ref(finding_type: str) -> dict:
+    """OWASP Top 10 (2021) category + CWE for a frozen Finding.type. Falls back
+    to an explicit "Uncategorized" label for any type outside the four the
+    schema defines, rather than guessing — this is presentation-only and never
+    gates a finding."""
+    return _OWASP_MAP.get(finding_type, {"owasp": "Uncategorized", "cwe": "—"})
+
+
+def _owasp_summary_table(findings: list[dict]) -> str:
+    if not findings:
+        return "_No findings to map._\n"
+    counts: dict[tuple[str, str], int] = {}
+    for f in findings:
+        ref = _owasp_ref(f.get("type", ""))
+        key = (ref["owasp"], ref["cwe"])
+        counts[key] = counts.get(key, 0) + 1
+    rows = ["| OWASP Top 10 (2021) | CWE | Findings |", "|---|---|---|"]
+    for (owasp, cwe), n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        rows.append(f"| {owasp} | {cwe} | {n} |")
+    return "\n".join(rows) + "\n"
+
+
 def _finding_section(f: dict, i: int) -> str:
+    ref = _owasp_ref(f.get("type", ""))
     return f"""### Finding {i}: {f.get('type', 'Unknown')} in `{f.get('parameter', 'unknown')}`
 
 - **Severity:** {f.get('severity', 'Unknown')}
+- **OWASP Top 10 (2021):** {ref['owasp']}
+- **CWE:** {ref['cwe']}
 - **Affected URL:** {f.get('url', 'unknown')}
 - **Vulnerable Parameter:** {f.get('parameter', 'unknown')}
 - **Payload:** `{f.get('payload', '(not recorded)')}`
@@ -331,6 +380,7 @@ def _build_deterministic_markdown(record: dict, scan_id: str) -> str:
 **Scan window:** {started} — {finished}
 **Generated:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
 **Tool:** RedSee Automated Scanner (deterministic report — evidence-gated, no LLM narrative)
+**Framework Alignment:** OWASP Top 10 (2021) · CWE
 **Total Findings:** {len(findings)}
 **Critical:** {by_sev['Critical']}  **High:** {by_sev['High']}  **Medium:** {by_sev['Medium']}  **Low:** {by_sev['Low']}
 
@@ -366,6 +416,16 @@ TLS inspection, content discovery) ran independently. Tool-by-tool outcome:
 {_tools_table(tools_run)}
 """
 
+    framework_section = f"""
+## Framework Alignment
+
+Each finding is mapped to its [OWASP Top 10 (2021)](https://owasp.org/Top10/)
+category and CWE identifier — an industry-standard taxonomy, applied here for
+reporting/citation purposes only; it never changes which findings exist.
+
+{_owasp_summary_table(findings)}
+"""
+
     findings_section = "\n## Findings\n\n"
     if findings:
         for i, f in enumerate(findings, 1):
@@ -388,14 +448,15 @@ httpx / tlsx / ffuf) — never fabricated or inferred by a model. Authorized tes
 only.*
 """
 
-    return cover + methodology + findings_section + recon_section + footer
+    return cover + methodology + framework_section + findings_section + recon_section + footer
 
 
 def generate_deterministic_report(record: dict, scan_id: str | None = None) -> tuple[str, str]:
     """Build and render a deterministic (LLM-free) red report from `record` —
     either the full unified scan_<id>.json record, or a minimal wrapper carrying
-    at least {"findings": [...]}. Returns (output_path, "pdf"|"html"). Never
-    raises for "0 findings" — a clean scan gets a real report, not an error.
+    at least {"findings": [...]}. Returns (output_path, "pdf") — PDF-only, raises
+    RuntimeError if weasyprint is unavailable. Never raises for "0 findings" — a
+    clean scan gets a real report, not an error.
     """
     scan_id = scan_id or record.get("scan_id") or datetime.now().strftime("%Y%m%d_%H%M%S")
     md = _build_deterministic_markdown(record, scan_id)

@@ -382,8 +382,8 @@ tbody tr:last-child td { border-bottom: none; }
 .grid-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
 .settings-panel { max-width: 640px; }
 .settings-lead { font-size: 13px; line-height: 1.6; color: var(--ink-dim); margin: 0 0 20px; }
-#llmStatusTag { color: var(--ink-faint); background: var(--panel-2); }
-#llmStatusTag.tag-ready { color: var(--ok); background: rgba(55, 217, 138, 0.1); }
+#llmStatusTag, #wazuhStatusTag { color: var(--ink-faint); background: var(--panel-2); }
+#llmStatusTag.tag-ready, #wazuhStatusTag.tag-ready { color: var(--ok); background: rgba(55, 217, 138, 0.1); }
 .field-hint { font-family: var(--mono); font-size: 9px; letter-spacing: 0.3px; text-transform: none; color: var(--ink-faint); margin-left: 6px; }
 .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .seg-opt { position: relative; cursor: pointer; }
@@ -608,12 +608,17 @@ body.public.rn { color: #fff; }
 .rn-cur-down .rn-cur-ring { width: 26px; height: 26px; border-color: var(--red); }
 .rn-cur-down.rn-cur-hover .rn-cur-ring { width: 44px; height: 44px; }
 /* Console: the reticle takes the active tab's side — RED on Red Ops, CYAN on Blue
-   Ops (data-view is set on <html> by setView). Public pages have no data-view, so
-   they keep the red default above. */
+   Ops, neutral GREY on Settings/config (data-view is set on <html> by setView).
+   Public pages have no data-view, so they keep the red default above. */
 [data-view="blue"] .rn-cur-dot { background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
 [data-view="blue"] .rn-cur-ring { border-color: rgba(47, 212, 230, 0.6); box-shadow: 0 0 14px rgba(47, 212, 230, 0.22), inset 0 0 8px rgba(47, 212, 230, 0.12); }
 [data-view="blue"].rn-cur-hover .rn-cur-ring { border-color: var(--cyan-soft); background: rgba(47, 212, 230, 0.06); box-shadow: 0 0 20px rgba(47, 212, 230, 0.4), inset 0 0 10px rgba(47, 212, 230, 0.14); }
 [data-view="blue"].rn-cur-down .rn-cur-ring { border-color: var(--cyan); }
+
+[data-view="settings"] .rn-cur-dot { background: var(--ink-dim); box-shadow: 0 0 10px var(--ink-dim); }
+[data-view="settings"] .rn-cur-ring { border-color: rgba(154, 168, 187, 0.6); box-shadow: 0 0 14px rgba(154, 168, 187, 0.22), inset 0 0 8px rgba(154, 168, 187, 0.12); }
+[data-view="settings"].rn-cur-hover .rn-cur-ring { border-color: var(--ink); background: rgba(154, 168, 187, 0.08); box-shadow: 0 0 20px rgba(154, 168, 187, 0.4), inset 0 0 10px rgba(154, 168, 187, 0.14); }
+[data-view="settings"].rn-cur-down .rn-cur-ring { border-color: var(--ink-dim); }
 
 /* ── Login (auth card) ─────────────────────────────────────── */
 .auth-wrap { position: relative; z-index: 1; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 40px 20px; }

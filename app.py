@@ -305,9 +305,17 @@ def api_save_settings():
 
 @app.route("/api/settings/test", methods=["POST"])
 def api_test_settings():
-    """Reachability check for the endpoint being configured (does not persist)."""
+    """Reachability check for the LLM endpoint being configured (does not persist)."""
     data = request.get_json(silent=True) or {}
     return jsonify(console_settings.test_connection(data))
+
+
+@app.route("/api/settings/test-wazuh", methods=["POST"])
+def api_test_wazuh_settings():
+    """Reachability + auth check for the Wazuh API being configured (does not
+    persist, does not fetch real alerts)."""
+    data = request.get_json(silent=True) or {}
+    return jsonify(console_settings.test_wazuh_connection(data))
 
 
 # ─── ROUTE: Scan Status ────────────────────────────────────
@@ -361,7 +369,7 @@ def scan_findings(scan_id):
 # ─── ROUTE: Generate Red Team Report ──────────────────────
 @app.route("/scan/<scan_id>/report", methods=["POST"])
 def generate_report(scan_id):
-    """Returns: { "report_url": "/downloads/red_report_<scan_id>.<ext>", "format": "pdf"|"html" }
+    """Returns: { "report_url": "/downloads/red_report_<scan_id>.pdf", "format": "pdf" }
 
     Prefers the unified outputs/scan_{scan_id}.json (D-024 — full target/mode/
     tools_run/recon context), falling back to the legacy outputs/findings_{scan_id}
@@ -369,11 +377,12 @@ def generate_report(scan_id):
     then the in-memory cache, so any known scan_id can still get a report.
 
     Uses red_report.generate_deterministic_report — evidence-derived, NOT an LLM
-    call — so this route needs neither weasyprint nor an LLM API key to succeed:
-    it renders a PDF when weasyprint happens to be installed, else a self-
-    contained HTML report. A scan with 0 findings still gets a real report (a
-    clean result is a legitimate deliverable); only a scan with NO data at all
-    (never ran / unknown id) is refused, with a clear reason — never a dead click.
+    call, so this route needs no LLM API key to succeed. Reports are PDF-only
+    (weasyprint is a hard requirement; a 500 with a clear message is returned if
+    it's missing, never a silent HTML downgrade). A scan with 0 findings still
+    gets a real report (a clean result is a legitimate deliverable); only a scan
+    with NO data at all (never ran / unknown id) is refused, with a clear reason
+    — never a dead click.
     """
     scan_json_path = OUTPUTS_DIR / f"scan_{scan_id}.json"
     findings_path = OUTPUTS_DIR / f"findings_{scan_id}.json"
@@ -396,7 +405,7 @@ def generate_report(scan_id):
                         "still be queued/running, or the id is unknown."}), 404
 
     try:
-        from red_report import generate_deterministic_report   # lazy: only needs markdown (always present)
+        from red_report import generate_deterministic_report   # lazy: needs markdown + weasyprint (PDF-only)
         report_path, fmt = generate_deterministic_report(record, scan_id=scan_id)
     except Exception as e:                            # noqa: BLE001 - never let this 500 opaquely
         return jsonify({"error": f"Report generation failed: {e}"}), 500
@@ -474,8 +483,12 @@ def analyze_logs():
                     except OSError:
                         pass
             else:
-                # Server-side path — defaults to the live Wazuh alerts.json (JSONL).
-                path = (payload.get("path") or WAZUH_ALERTS_DEFAULT_PATH).strip()
+                # Server-side path — an explicit request `path` wins, then the
+                # console Settings tab's configured path (REDSEE_WAZUH_ALERTS_
+                # PATH, read live so a Settings save takes effect immediately,
+                # no restart), then the built-in default.
+                path = (payload.get("path") or os.environ.get("REDSEE_WAZUH_ALERTS_PATH")
+                        or WAZUH_ALERTS_DEFAULT_PATH).strip()
                 try:
                     events = ingest_log_file(path, last_n=last_n, since_minutes=minutes)
                 except FileNotFoundError:
@@ -548,12 +561,13 @@ def fetch_wazuh_alerts_route():
 def generate_blue_report_route():
     """
     Body:    { "analysis_id": "xyz789" } OR { "events": [...] }
-    Returns: { "report_url": "/downloads/blue_report_xyz789.<ext>", "format": "pdf"|"html" }
+    Returns: { "report_url": "/downloads/blue_report_xyz789.pdf", "format": "pdf" }
 
     Uses blue_report.generate_deterministic_blue_report — evidence-derived, NOT
-    an LLM call — so this route needs neither weasyprint nor an LLM API key: it
-    renders a PDF when weasyprint is installed, else a self-contained HTML report.
-    The "Generate Blue Report" button therefore always produces a real file.
+    an LLM call, so this route needs no LLM API key. Reports are PDF-only
+    (weasyprint is a hard requirement; a 500 with a clear message is returned if
+    it's missing, never a silent HTML downgrade). The "Generate Blue Report"
+    button always produces a real PDF.
     """
     data = request.get_json() or {}
 
@@ -568,7 +582,7 @@ def generate_blue_report_route():
             return jsonify({"error": "No events data provided"}), 400
 
         try:
-            from blue_report import generate_deterministic_blue_report  # lazy: only needs markdown
+            from blue_report import generate_deterministic_blue_report  # lazy: needs markdown + weasyprint (PDF-only)
         except Exception as imp_err:                        # noqa: BLE001
             return jsonify({"error": f"Blue report generation is unavailable: {imp_err}"}), 503
 

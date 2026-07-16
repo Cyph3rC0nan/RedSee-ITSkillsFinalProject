@@ -61,7 +61,7 @@
         </div>
         <div class="topbar-right">
           <span class="clock" id="clock">--:--:--</span>
-          <span class="clock-zone">UTC</span>
+          <span class="clock-zone" title="Asia/Baku">AZT</span>
         </div>
       </header>
 
@@ -374,6 +374,55 @@
                 </div>
               </label>
             </details>
+          </section>
+
+          <!-- Wazuh / SIEM source -->
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>Wazuh / SIEM Source</h2>
+              <span class="panel-tag" id="wazuhStatusTag">unconfigured</span>
+            </div>
+            <p class="settings-lead">
+              Where Blue Ops pulls Wazuh alerts from — a local <span class="mono">alerts.json</span>
+              file, or the live Wazuh REST API — instead of editing <span class="mono">.env</span>.
+            </p>
+
+            <div class="field">
+              <span class="field-label">Source</span>
+              <div class="seg-toggle" role="radiogroup" aria-label="Wazuh source">
+                <label class="seg-opt"><input type="radio" name="wazuh_source" value="file" /><span class="seg-chip">Local file</span></label>
+                <label class="seg-opt"><input type="radio" name="wazuh_source" value="api" /><span class="seg-chip">Live API</span></label>
+              </div>
+            </div>
+
+            <label class="field" id="wazuhPathField">
+              <span class="field-label">alerts.json path</span>
+              <input type="text" id="setWazuhPath" spellcheck="false" autocapitalize="off"
+                     placeholder="/var/ossec/logs/alerts/alerts.json" />
+            </label>
+
+            <label class="field" id="wazuhApiUrlField">
+              <span class="field-label">Wazuh API URL</span>
+              <input type="text" id="setWazuhApiUrl" spellcheck="false" autocapitalize="off"
+                     placeholder="https://wazuh-host:55000" />
+            </label>
+
+            <label class="field" id="wazuhApiUserField">
+              <span class="field-label">Username</span>
+              <input type="text" id="setWazuhApiUser" spellcheck="false" autocapitalize="off"
+                     placeholder="admin" />
+            </label>
+
+            <label class="field" id="wazuhApiPassField">
+              <span class="field-label">Password <span class="field-hint" id="wazuhApiPassHint"></span></span>
+              <input type="password" id="setWazuhApiPass" autocomplete="off" spellcheck="false"
+                     placeholder="leave blank to keep the current password" />
+            </label>
+
+            <div class="settings-actions">
+              <button class="btn btn-ghost" id="testWazuhBtn">Test connection</button>
+            </div>
+            <p class="form-note" id="wazuhSettingsNote" role="status" aria-live="polite"></p>
           </section>
 
         </div>

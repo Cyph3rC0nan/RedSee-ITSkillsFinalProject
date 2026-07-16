@@ -1,17 +1,20 @@
 """
 Console-managed runtime settings — lets the operator configure the LLM (external
-BYOK key or a local Ollama endpoint), the per-scan cost cap, and a few scan
-guards from the dashboard instead of editing `.env` by hand.
+BYOK key or a local Ollama endpoint), the per-scan cost cap, a few scan guards,
+and the Wazuh SIEM source (local alerts.json path, or the live Wazuh API) from
+the dashboard instead of editing `.env` by hand.
 
-How it takes effect WITHOUT a restart: the engine reads every one of these keys
-straight from `os.environ` at scan time (`engine.llm.load_llm_config`,
-`engine.scope.load_scope_config`, `modules.scan`) and the console runs as a
-single gunicorn worker, so writing `os.environ` here is visible to the next scan.
-Values are also persisted to `outputs/settings.json` (0600, gitignored) and
-re-applied at startup so they survive a restart. UI-set values win over `.env`.
+How it takes effect WITHOUT a restart: the engine/ingestor read every one of
+these keys straight from `os.environ` at call time (`engine.llm.load_llm_config`,
+`engine.scope.load_scope_config`, `modules.scan`, `log_ingestor.fetch_wazuh_
+alerts`, app.py's `/analyze-logs`) and the console runs as a single gunicorn
+worker, so writing `os.environ` here is visible to the very next call. Values
+are also persisted to `outputs/settings.json` (0600, gitignored) and re-applied
+at startup so they survive a restart. UI-set values win over `.env`.
 
-The API key is a secret: it is stored server-side, never returned to the browser
-in full (only a "set" flag + last-4 hint), and never logged.
+Secrets (the LLM API key, the Wazuh API password) are stored server-side, never
+returned to the browser in full (only a "set" flag + last-4 hint), and never
+logged.
 """
 
 import os
@@ -34,9 +37,17 @@ _ENV_MAP = {
     "timeout_sec":  ("REDSEE_LLM_TIMEOUT", "int"),
     "rate_limit":   ("REDSEE_RATE_LIMIT", "int"),
     "max_parallel": ("REDSEE_MAX_PARALLEL_SANDBOXES", "int"),
+    # Wazuh SIEM source — read by log_ingestor.fetch_wazuh_alerts (api_url/
+    # username/password) and app.py's /analyze-logs (REDSEE_WAZUH_ALERTS_PATH,
+    # an override on top of log_ingestor.WAZUH_ALERTS_DEFAULT_PATH).
+    "wazuh_path":     ("REDSEE_WAZUH_ALERTS_PATH", "str"),
+    "wazuh_api_url":  ("WAZUH_API_URL", "str"),
+    "wazuh_api_user": ("WAZUH_API_USER", "str"),
+    "wazuh_api_pass": ("WAZUH_API_PASS", "secret"),
 }
-_SECRET_FIELDS = {"api_key"}
-# "provider" (external | local) is UI-only state; it is not read by the engine.
+_SECRET_FIELDS = {"api_key", "wazuh_api_pass"}
+# "provider" (external | local) and "wazuh_source" (file | api) are UI-only
+# state (which panel/fields to emphasize) — neither is read by the engine.
 
 
 class SettingsError(ValueError):
@@ -104,31 +115,38 @@ def _coerce(field: str, kind: str, raw):
 
 def save_settings(incoming: dict) -> dict:
     """Validate + persist + apply. `incoming` uses the form field names. A blank
-    api_key KEEPS the stored one (so the UI never has to re-enter it); switching
-    provider to 'local' clears it. Returns the public (masked) view."""
+    secret field (api_key, wazuh_api_pass) KEEPS the stored value (so the UI
+    never has to re-enter it on every save); switching the LLM provider to
+    'local' additionally clears the LLM api_key (no key needed there — this
+    does NOT apply to wazuh_api_pass, since file/api Wazuh source config is
+    independent and both may legitimately be kept configured at once).
+    Returns the public (masked) view."""
     with _LOCK:
         stored = _read_file()
         provider = str(incoming.get("provider", stored.get("provider", "external"))).strip().lower()
         if provider not in ("external", "local"):
             provider = "external"
+        wazuh_source = str(incoming.get("wazuh_source", stored.get("wazuh_source", "file"))).strip().lower()
+        if wazuh_source not in ("file", "api"):
+            wazuh_source = "file"
 
         out = dict(stored)
         out["provider"] = provider
+        out["wazuh_source"] = wazuh_source
 
         for field, (_env, kind) in _ENV_MAP.items():
-            if field == "api_key":
-                continue  # handled below
+            if field in _SECRET_FIELDS:
+                continue  # handled below (blank keeps existing)
             if field in incoming:
                 out[field] = _coerce(field, kind, incoming.get(field))
 
-        # API key: blank submission keeps the existing key; local mode drops it.
+        for field in _SECRET_FIELDS:
+            submitted = incoming.get(field)
+            if submitted is not None and str(submitted).strip() != "":
+                out[field] = str(submitted).strip()
+            # else: keep whatever was stored
         if provider == "local":
             out["api_key"] = ""
-        else:
-            submitted = incoming.get("api_key")
-            if submitted is not None and str(submitted).strip() != "":
-                out["api_key"] = str(submitted).strip()
-            # else: keep whatever was stored
 
         # Numeric sanity
         if out.get("max_usd") is not None and out["max_usd"] < 0:
@@ -151,9 +169,10 @@ def _mask(key: str) -> str:
 
 
 def public_settings() -> dict:
-    """The current EFFECTIVE config (what the next scan would use), read from
-    os.environ, with the API key masked. Provider is inferred from the saved
-    file, falling back to a heuristic on the base URL."""
+    """The current EFFECTIVE config (what the next scan/ingest would use), read
+    from os.environ, with secrets masked. provider/wazuh_source are UI-state
+    read from the saved file (provider falls back to a base-URL heuristic when
+    never explicitly set; wazuh_source defaults to "file")."""
     stored = _read_file()
     eff = {}
     for field, (env, kind) in _ENV_MAP.items():
@@ -169,6 +188,11 @@ def public_settings() -> dict:
         looks_local = any(h in base for h in ("localhost", "127.0.0.1", "11434", "host.docker.internal"))
         provider = "local" if (looks_local and not api_key) else ("external" if base else "external")
 
+    wazuh_source = stored.get("wazuh_source")
+    if wazuh_source not in ("file", "api"):
+        wazuh_source = "file"
+    wazuh_api_pass = os.environ.get("WAZUH_API_PASS", "")
+
     return {
         "provider": provider,
         "base_url": eff.get("base_url", ""),
@@ -182,6 +206,13 @@ def public_settings() -> dict:
         "rate_limit": eff.get("rate_limit", ""),
         "max_parallel": eff.get("max_parallel", ""),
         "configured": bool(eff.get("base_url") and eff.get("model")),
+        "wazuh_source": wazuh_source,
+        "wazuh_path": eff.get("wazuh_path", ""),
+        "wazuh_api_url": eff.get("wazuh_api_url", ""),
+        "wazuh_api_user": eff.get("wazuh_api_user", ""),
+        "wazuh_api_pass_set": bool(wazuh_api_pass),
+        "wazuh_api_pass_hint": _mask(wazuh_api_pass) if wazuh_api_pass else "",
+        "wazuh_configured": bool(eff.get("wazuh_api_url")) if wazuh_source == "api" else True,
     }
 
 
@@ -219,3 +250,33 @@ def test_connection(incoming: dict) -> dict:
     if r.status_code in (401, 403):
         return {"ok": False, "detail": f"Reached the endpoint but auth was rejected (HTTP {r.status_code}). Check the API key."}
     return {"ok": False, "detail": f"Endpoint returned HTTP {r.status_code}."}
+
+
+def test_wazuh_connection(incoming: dict) -> dict:
+    """Reachability + auth check for the Wazuh API being configured — POSTs to
+    {url}/security/user/authenticate, the same endpoint log_ingestor.
+    fetch_wazuh_alerts uses. Uses the submitted values, falling back to the
+    stored ones when a field is left blank. Never persists, never fetches real
+    alerts (this only proves the credentials/URL work, same "cheap check"
+    philosophy as test_connection above). verify=False matches fetch_wazuh_
+    alerts' existing behavior — Wazuh installs commonly use a self-signed cert."""
+    import requests
+
+    url = str(incoming.get("wazuh_api_url", "") or os.environ.get("WAZUH_API_URL", "")).strip().rstrip("/")
+    if not url:
+        return {"ok": False, "detail": "Set a Wazuh API URL first."}
+    user = str(incoming.get("wazuh_api_user", "") or os.environ.get("WAZUH_API_USER", "")).strip()
+    pw = str(incoming.get("wazuh_api_pass", "")).strip() or os.environ.get("WAZUH_API_PASS", "")
+
+    try:
+        r = requests.post(f"{url}/security/user/authenticate",
+                           auth=(user, pw), verify=False, timeout=10)
+    except requests.exceptions.RequestException as exc:
+        return {"ok": False, "detail": f"Could not reach {url}: {exc}"}
+
+    if r.status_code == 200:
+        return {"ok": True, "detail": "Reachable — authentication succeeded."}
+    if r.status_code in (401, 403):
+        return {"ok": False, "detail": f"Reached the API but authentication was rejected "
+                f"(HTTP {r.status_code}). Check the username/password."}
+    return {"ok": False, "detail": f"Wazuh API returned HTTP {r.status_code}."}

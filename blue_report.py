@@ -12,6 +12,7 @@ Usage (import):
 """
 
 import re
+import html
 import json
 from collections import Counter
 from datetime import datetime
@@ -19,9 +20,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Reuse all LLM and PDF utilities from red_report — do NOT duplicate them.
-# _render_report is the deterministic renderer (weasyprint PDF when present, else
-# self-contained HTML) shared with the red report; reusing it keeps blue_report
-# free of any direct weasyprint import so the deterministic path always works.
+# _render_report is the deterministic, PDF-only renderer shared with the red
+# report; reusing it keeps blue_report free of any direct weasyprint import.
 from red_report import call_llm, load_prompt, markdown_to_pdf, _render_report
 
 load_dotenv()
@@ -31,7 +31,9 @@ OUTPUTS_DIR = BASE_DIR / "outputs"
 OUTPUTS_DIR.mkdir(exist_ok=True)
 
 _MITRE_MARKER_RE = re.compile(r"\[MITRE:\s*([^\]]+)\]")
-_MITRE_ID_RE = re.compile(r"T\d{4}(?:\.\d{3})?")
+# Each entry inside the marker is `T1190` or `T1190 (Tactic: Technique)` or
+# `T1190 (Tactic)` (log_ingestor._compose_detail); entries are ", "-joined.
+_MITRE_ENTRY_RE = re.compile(r"^(T\d{4}(?:\.\d{3})?)(?:\s*\(([^:)]+)(?::\s*(.+))?\))?$")
 
 
 def _compute_severity_distribution(events: list[dict]) -> str:
@@ -110,15 +112,15 @@ Generate the full blue team report now. Include specific Wazuh XML and Splunk SP
     return output_path
 
 
-# ── Deterministic blue report (no LLM, weasyprint OPTIONAL) ──────────────────
+# ── Deterministic blue report (no LLM, PDF-only) ─────────────────────────────
 # generate_blue_report() above ALWAYS needs a working LLM call + weasyprint — a
 # two-part dependency that fails closed the moment either is unavailable. The
 # generator below builds the SAME kind of incident report directly from the
 # ingested Events (deterministic string templates, not an LLM), rendered via
-# red_report._render_report (weasyprint PDF when importable, else self-contained
-# HTML — needs only the already-installed `markdown` pkg). This is the path
-# app.py's /generate-blue-report route calls: the "Generate Blue Report" button
-# must ALWAYS produce a real, downloadable file, never a dead click.
+# red_report._render_report — PDF-only, raises if weasyprint is unavailable
+# (see that function's docstring). This is the path app.py's
+# /generate-blue-report route calls: the "Generate Blue Report" button always
+# produces a real PDF, never a dead click and never a lesser HTML substitute.
 
 def _sev_bucket(level) -> str:
     """Wazuh numeric level -> exact schema severity string (mirror of
@@ -148,12 +150,19 @@ def _fmt_ts(iso) -> str:
 
 
 def _mitre_from_event(e: dict) -> list:
-    """Recover MITRE technique IDs the ingestor packed into raw_payload's
-    `[MITRE: ...]` marker (the frozen Event schema has no dedicated field)."""
+    """Recover MITRE ATT&CK (id, tactic, technique) triples the ingestor packed
+    into raw_payload's `[MITRE: ...]` marker (the frozen Event schema has no
+    dedicated field). tactic/technique are "" when the SIEM's rule metadata
+    didn't supply them for that id — never guessed or backfilled."""
     marker = _MITRE_MARKER_RE.search(e.get("raw_payload", "") or "")
     if not marker:
         return []
-    return _MITRE_ID_RE.findall(marker.group(1))
+    out = []
+    for entry in marker.group(1).split(", "):
+        m = _MITRE_ENTRY_RE.match(entry.strip())
+        if m:
+            out.append((m.group(1), m.group(2) or "", m.group(3) or ""))
+    return out
 
 
 def _severity_table(events: list) -> str:
@@ -165,15 +174,22 @@ def _severity_table(events: list) -> str:
 
 
 def _mitre_section(events: list) -> str:
-    counts = Counter()
+    """MITRE ATT&CK® Enterprise technique table — id, tactic, technique name,
+    and event count. tactic/technique come solely from the SIEM's own rule
+    metadata (Wazuh's rule.mitre block); an id the SIEM tagged with no name is
+    shown with the id alone, never a fabricated label."""
+    seen: dict[str, dict] = {}
     for e in events:
-        for tid in _mitre_from_event(e):
-            counts[tid] += 1
-    if not counts:
+        for tid, tactic, technique in _mitre_from_event(e):
+            row = seen.setdefault(tid, {"tactic": "", "technique": "", "count": 0})
+            row["tactic"] = row["tactic"] or tactic
+            row["technique"] = row["technique"] or technique
+            row["count"] += 1
+    if not seen:
         return "_No MITRE ATT&CK techniques recorded on these events._\n"
-    rows = ["| Technique | Events |", "|---|---|"]
-    for tid, n in counts.most_common():
-        rows.append(f"| {tid} | {n} |")
+    rows = ["| Technique ID | Tactic | Technique | Events |", "|---|---|---|---|"]
+    for tid, info in sorted(seen.items(), key=lambda kv: -kv[1]["count"]):
+        rows.append(f"| {tid} | {info['tactic'] or '—'} | {info['technique'] or '—'} | {info['count']} |")
     return "\n".join(rows) + "\n"
 
 
@@ -188,21 +204,38 @@ def _top_source_ips(events: list, limit: int = 10) -> str:
 
 
 def _events_table(events: list, limit: int = 100) -> str:
+    """Render the normalized-events list as a raw HTML `<table class="events-
+    table">` (not a markdown pipe-table) so pdf_templates/blue.css can size its
+    7 columns explicitly — the markdown-table version had no way to give the
+    free-text Description/Target columns more width than the numeric ones,
+    which squeezed them illegibly. Every field is html.escape()'d: real Wazuh
+    events legitimately contain literal `<script>...</script>` XSS payloads
+    (the attacks RedSee's own scans generate), which must render as inert text
+    in the report, never as unescaped markup.
+    """
     if not events:
         return "_No events ingested._\n"
-    rows = ["| Lvl | Sev | Time | Rule | Description | Source IP | Target |",
-            "|---|---|---|---|---|---|---|"]
+    body_rows = []
     for e in events[:limit]:
         lvl = e.get("severity_level", 0)
         sev = _sev_bucket(lvl)
-        flag = " ⚠" if _is_web_attack(e) else ""
-        desc = str(e.get("description", "")).replace("|", "\\|")
-        url = str(e.get("target_url", "")).replace("|", "\\|")
-        rows.append(
-            f"| {lvl} | {sev} | {_fmt_ts(e.get('timestamp'))} | "
-            f"{e.get('rule_id', '?')}{flag} | {desc} | {e.get('src_ip', '')} | {url} |")
-    extra = f"\n\n_Showing {min(limit, len(events))} of {len(events)} events._" if len(events) > limit else ""
-    return "\n".join(rows) + "\n" + extra
+        flag = ' <span class="web-flag">⚠</span>' if _is_web_attack(e) else ""
+        rule_id = html.escape(str(e.get("rule_id", "?")))
+        desc = html.escape(str(e.get("description", "")))
+        src_ip = html.escape(str(e.get("src_ip", "")))
+        url = html.escape(str(e.get("target_url", "")))
+        body_rows.append(
+            f"<tr><td>{lvl}</td><td>{sev}</td><td>{_fmt_ts(e.get('timestamp'))}</td>"
+            f"<td>{rule_id}{flag}</td><td>{desc}</td><td>{src_ip}</td><td>{url}</td></tr>"
+        )
+    table = (
+        '<table class="events-table">\n'
+        "<thead><tr><th>Lvl</th><th>Sev</th><th>Time</th><th>Rule</th>"
+        "<th>Description</th><th>Source IP</th><th>Target</th></tr></thead>\n"
+        "<tbody>\n" + "\n".join(body_rows) + "\n</tbody>\n</table>\n"
+    )
+    extra = f"\n_Showing {min(limit, len(events))} of {len(events)} events._\n" if len(events) > limit else ""
+    return table + extra
 
 
 def _build_deterministic_blue_markdown(events: list, report_id: str) -> str:
@@ -219,6 +252,7 @@ def _build_deterministic_blue_markdown(events: list, report_id: str) -> str:
 **Report ID:** {report_id}
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **Tool:** RedSee SIEM Analyzer (deterministic report — no LLM narrative)
+**Framework Alignment:** MITRE ATT&CK® Enterprise
 **Total Events Analyzed:** {total}
 **SIEM Sources:** {', '.join(sources)}
 **Time Range:** {t_start} → {t_end}
@@ -247,7 +281,11 @@ def _build_deterministic_blue_markdown(events: list, report_id: str) -> str:
 
 {_severity_table(events)}
 
-## MITRE ATT&CK Techniques Seen
+## MITRE ATT&CK® Framework Alignment
+
+Observed activity is mapped to the [MITRE ATT&CK](https://attack.mitre.org)
+Enterprise matrix using the tactic/technique metadata the SIEM itself attached
+to each rule — never inferred or guessed by this tool.
 
 {_mitre_section(events)}
 
@@ -273,8 +311,9 @@ severity here is fabricated by a model. Defensive analysis only.*
 
 def generate_deterministic_blue_report(events: list, report_id: str = None) -> tuple:
     """Build and render a deterministic (LLM-free) blue incident report from the
-    ingested Event dicts. Returns (output_path, "pdf"|"html"). Never raises for
-    "0 events" — an empty window still gets a real, downloadable report."""
+    ingested Event dicts. Returns (output_path, "pdf") — PDF-only, raises
+    RuntimeError if weasyprint is unavailable. Never raises for "0 events" — an
+    empty window still gets a real, downloadable report."""
     if not report_id:
         report_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     events = events or []

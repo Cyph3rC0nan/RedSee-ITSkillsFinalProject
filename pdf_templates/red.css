@@ -61,22 +61,36 @@ table {
     border-collapse: collapse;
     margin: 15px 0;
     font-size: 9pt;
-    page-break-inside: avoid;
+    table-layout: fixed;
 }
+
+/* Let a tall table break across pages instead of being pushed whole onto the
+   next one (the old `page-break-inside: avoid` on `table` forced that, which
+   could leave a large blank gap under a preceding section header). Repeat the
+   header row on each page a table spans; keep only a single ROW intact. */
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+
+/* border-box so padding+border fold inside each column's specified/auto width
+   under table-layout:fixed, instead of adding on top and pushing later
+   columns past the page's right margin (same fix as blue.css). */
+th, td { box-sizing: border-box; }
 
 th {
     background: #2c3e50;
     color: white;
-    padding: 8px 12px;
+    padding: 8px 10px;
     text-align: left;
     font-weight: 600;
     border: 1px solid #2c3e50;
 }
 
 td {
-    padding: 6px 12px;
+    padding: 6px 10px;
     border: 1px solid #ddd;
     vertical-align: top;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 tr:nth-child(even) td { background: #f8f9fa; }
@@ -99,6 +113,16 @@ pre {
     line-height: 1.5;
     page-break-inside: avoid;
     margin: 10px 0;
+    /* <pre> defaults to white-space:pre (no wrap, ever) — evidence blocks are
+       raw tool output (sqlmap/Dalfox payloads, full URLs) that can be one very
+       long unbroken line, which without this ran straight off the page.
+       pre-wrap keeps pre's whitespace/newline preservation but allows
+       wrapping; overflow-wrap/word-break handle a token with no whitespace
+       at all (e.g. a bare long URL). white-space is inherited, so the nested
+       <code> below wraps identically without its own rule. */
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 pre code { background: none; color: inherit; padding: 0; }

@@ -1,98 +1,91 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-15T13:10:00Z
-**Current milestone:** D-025/D-026 discovery→injection loop + param seeding — code is merged
-to `main` (via `feat/nuclei`), live-verified against the real target on the user's WSL2
-machine; a seed-path ranking bug found live has been fixed+pushed. One more live re-run
-needed to get a clean (non-resource-starved) confirmation on the `q` SQLi param.
+**Last updated:** 2026-07-16T03:15:00Z
+**Current milestone:** Console UX polish, part 2 — blue-report PDF layout fixes (column
+widths, page-break gap, a follow-up right-margin overflow, AND the red report's Evidence
+`<pre>`-block overflow), a new Wazuh/SIEM Source Settings panel, a grey cursor on the Settings
+tab, AND the console's `fmtTime()` (scan times, event times, finding times — every non-clock
+timestamp in the frontend) converted to Asia/Baku, matching the topbar clock fixed earlier.
+Builds on this session's earlier work (Baku clock, PDF-only reports, OWASP/MITRE citations).
+All live-verified with geometrically-correct PDF tooling (pdfminer.six — see Key decisions;
+pypdf's raw text-matrix is NOT trustworthy for position checks). UNCOMMITTED.
 
 ## Next step
-Have the user re-run `scripts/scan_root_verify.py` now that (a) the seed-ranking fix is
-pulled and (b) this server's memory pressure has been reduced (stale sessions killed — see
-"In progress"). Confirm the `q`/`search` params on `/rest/products/search` come back
-`injectable`, and that `/market` XSS is still reachable via discovery. If clean, D-025/D-026
-are fully done; if the sandbox self-test still intermittently fails, the box may need a
-bigger tier or Wazuh should be stopped during test windows.
+Review + commit this session's changes (see "Changed files" below), then push. The prior
+session's D-025/D-026 live re-verification may still be outstanding — check with the user,
+this session didn't touch it.
 
 ## In progress
-Killing stale processes on THIS server (vmi3362886) to relieve memory pressure (was 289MB
-free / load avg ~8, causing intermittent sandbox self-test failures + read-timeouts during
-the user's live scan — confirmed via `free -h`/`ps aux --sort=-%mem`: Wazuh indexer (~1.6GB)
-+ 4-5 concurrent Claude Code sessions were the load, NOT the RedSee scan itself). User
-confirmed all extra sessions were theirs and safe to close. Killed (or attempted — the
-in-session safety classifier was intermittently unavailable mid-task, retry if still alive):
-PIDs 1740662 (pts/3 `claude -c`), 2006772 (pts/5 `claude -c`), 2007576/2007587 (bg job
-`ff9ff7a9`), 1526275 (orphaned `mem_monitor.log` bash loop, ~16h old, harmless but stale).
-**Next session: verify these are actually gone (`ps -p <pids>`) and re-check `free -h`
-before the next live scan attempt.**
+nothing (this session's work is complete and live-verified; no known open PDF-layout or
+timezone issues)
 
 ## Recently completed (last 5)
-- Fixed live-evidenced seed-path ranking bug (commit `69d31d7`, pushed to `feat/nuclei`):
-  `_QUERY_PATH_MARKERS` in `engine/params.py` mixed strong query-verb markers (search/query/
-  find/lookup/filter) with weak collection-noun markers (products/users/orders/list/fetch/
-  get) in one flat tier, so `/api/Products` and `/rest/products/search` tied and the
-  alphabetical fallback ("api" < "rest") picked the WRONG path under `seed_paths=1` — the
-  real target never got tested. Split into `_QUERY_PATH_MARKERS_STRONG`/`_WEAK` two-tier
-  ranking; added regression test reproducing the exact two-URL scenario. Live re-verified:
-  the user's next scan run correctly seeded `/rest/products/search` (not `/api/Products`).
-  Also fixed `scan_root_verify.py` to pretty-print (indent=2) instead of one long line —
-  the user's terminal had mangled a long single-line JSON dump on copy/paste.
-- Merged all of `feat/nuclei` into `main` and pushed (merge commit `61740b3`): D-025/D-026
-  discovery+seeding work, the Wazuh JSONL blue-team ingestion, live-verify script, README
-  rewrite. Clean merge, zero conflicts, frozen files (`schemas.py`/`engine/sandbox.py`)
-  verified untouched via `git diff --stat`.
-- README.md full rewrite reflecting real current state (agentic architecture, security
-  model, scan modes, blue team/SIEM ingestion, dual LLM/deterministic report pattern) —
-  replaced the old stale static-pipeline description.
-- Helped user stand up native Docker Engine inside WSL2 Ubuntu (their local test box) after
-  discovering Docker Desktop's split-VM architecture broke RedSee's host-iptables sandbox
-  isolation model (`DOCKER-USER` chain missing) — root cause, not just a symptom fix.
-- Wazuh alerts.json → Blue Ops (ingest + feed + threat levels + deterministic blue report,
-  now on `main`). See DECISIONS.md / git log for detail — this entry is intentionally
-  compressed to keep this file under the line budget.
+- **Fixed the OTHER timezone bug: every non-clock timestamp in the console was still raw
+  UTC.** `fmtTime(iso)` (Red Ops scan list started/created time, scan detail panel started/
+  finished, Blue Ops events table timestamp) used to regex-extract `HH:MM:SS` VERBATIM from
+  whatever ISO string it got — UTC for scan/finding timestamps, the Wazuh SIEM's OWN server
+  offset for event timestamps (`log_ingestor.py` passes Wazuh's raw `timestamp` through
+  as-is, e.g. `...+0200`, never normalized). Rewritten to parse it as a real `Date` (resolves
+  `Z` or any explicit numeric offset correctly) and render through the SAME `fmtClock`/
+  Asia-Baku formatter as the topbar clock. An offset-less string (rare/defensive) is treated
+  as UTC rather than left to browser-local interpretation. Verified in Node against 7 cases
+  (UTC+Z, Wazuh +0200, Wazuh +04:00, offset-less, empty, garbage) — all correct.
+- **Fixed the blue-report PDF layout end-to-end** (4 related bugs, found + fixed across this
+  session): (1) illegible log table — `.events-table` now explicit raw HTML with per-column
+  widths (Description/Target get the bulk); (2) a big blank-page gap — `page-break-inside`
+  moved table→row + `thead` repeats; (3) MY OWN fix for (1) introduced a right-margin
+  overflow — `th`/`td` lacked `box-sizing: border-box`, so padding+border added on top of each
+  column's % width under `table-layout:fixed`, pushing the table wider than the page; (4)
+  found during verification of (3): red_report's Evidence `<pre>` blocks (raw sqlmap/Dalfox
+  output, single unbreakable lines) also ran off the page — `pre` defaults to `white-space:
+  pre` (never wraps), fixed with `pre-wrap` + `overflow-wrap`/`word-break`. ALL fixed in BOTH
+  red.css/blue.css. Live-verified with `pdfminer.six` (NOT raw `pypdf` — see Key decisions):
+  zero overflowing lines across real generated reports (5626 blue-report lines, 351
+  red-report lines checked).
+- New Settings panel "Wazuh / SIEM Source" — file path or live API (URL/user/password), a
+  `file`/`api` toggle; new `/api/settings/test-wazuh` route; `console_settings.py`'s secret
+  handling generalized to cover it. Live-verified: saved, reflected back masked, `/analyze-logs`
+  picked up the new path with no restart. Plus: grey cursor on the Settings tab
+  (`[data-view="settings"]` CSS override, matching the Red/Blue Ops red/cyan pattern).
+- New `tests/test_console_settings.py` (17 tests) + 6 new tests for `_events_table`'s rewrite
+  in `test_blue_report_deterministic.py`. 415 tests pass repo-wide (6 pre-existing unrelated
+  live-DVWA failures); frozen paths still empty diff.
+- Earlier this session: Baku clock (topbar), PDF-only reports (weasyprint re-pinned
+  `60.2`→`69.0`), OWASP/MITRE citations — see Key decisions below, not repeated in full here.
 
 ## Key decisions
-- Blue: MITRE has no home in the frozen 8-field Event, so it rides in `raw_payload` as a
-  parseable `[MITRE: T1190]` marker appended after the attack payload/full_log. blue_report
-  regexes it back out for the "MITRE techniques seen" section. Web-attack highlight keys off
-  rule_id 31xxx (derivable from Event.rule_id — `groups` isn't a schema field).
-- Blue report reuses `red_report._render_report` (not its own weasyprint import) so the
-  deterministic PDF/HTML fallback path is shared. `/generate-blue-report` now calls the
-  deterministic generator; old LLM `generate_blue_report` left as an optional path, not deleted.
-- `/analyze-logs` reads a server-side `path` (default Wazuh alerts.json) with a `last_n`=500
-  cap so a 1000s-line JSONL never floods the UI; JSONL detection is "first non-empty line
-  parses as JSON → parse line-by-line, skip malformed", with JSON-array/object fallbacks.
-- Report route calls a NEW deterministic generator, not "fix weasyprint + keep the LLM path
-  primary": even with weasyprint installed the LLM call would still fail (`OPENROUTER_API_KEY`
-  empty). A report button must not depend on a paid API key/network/model.
-- Skip reasons are computed from data ALREADY collected in the same scan (crawl count +
-  httpx reachability) — zero new calls. The skip CONDITION in modules/scan.py is
-  byte-identical to before; only the `detail` string changed (tools_run isn't in schemas.py).
-- storage/scan_store.py is a NEW top-level package (not engine/scan_store.py) — it imports
-  modules.scan (which imports engine.*), so storage->modules->engine avoids an import cycle.
-- modules/scan.py (not engine/orchestrator.py) — imports BOTH modules (sqli/xss) and engine
-  (recon/nuclei); engine must never import modules/. Unified file `scan_<id>.json`; per-tool
-  files share the SAME bare scan_id.
-- D-024: nuclei's real failure was a 256 MB OOM (not a slow scan) — only found by running
-  THROUGH the real sandbox (a raw `--network host` run looked fine and hid it).
-- Seed-path rank markers must be tiered (strong verb vs. weak noun), not one flat set — a
-  flat set lets a low-value path (`/api/Products`) tie a high-value one
-  (`/rest/products/search`) and lose only to alphabetical luck under a tight `seed_paths` cap.
-  Found via a LIVE run, not a test (all unit tests passed with the bug present).
-- Full decision history + rationale: DECISIONS.md D-012 through D-026.
+- `_events_table` emits raw HTML (`class="events-table"`, `html.escape()`'d every field) not
+  a markdown pipe-table, so blue.css can size ITS columns via `:nth-child(n)` without touching
+  the report's other, simpler tables. Escaping matters: real Wazuh events carry literal
+  `<script>` payloads that must render as inert text.
+- `table { page-break-inside: avoid }` → moved to `tr` in BOTH red.css/blue.css (same latent
+  bug, found while fixing blue's complaint — red has tall tables too). The bug pushed a whole
+  tall table to the next page (blank gap) instead of letting it split with a repeated header.
+- Wazuh settings generalize the EXISTING `_ENV_MAP`/secret-masking machinery (built for the
+  LLM api_key) — `_SECRET_FIELDS` is now iterated generically. `wazuh_source` (file/api) does
+  NOT clear the other side's config on switch (unlike LLM `provider`) — file path and API
+  creds are independent, both may stay configured at once.
+- **PDF-only, no HTML fallback** (weasyprint now installed + re-pinned `69.0`, hard-required).
+  OWASP/MITRE citations (`_owasp_ref`/`_OWASP_MAP`, richer `_mitre_info`) are presentation-only.
+  Report routes call the deterministic generator, never the LLM path. storage/scan_store.py +
+  modules/scan.py layering, D-024/D-025/D-026 all still true/unchanged — see DECISIONS.md
+  D-012–D-026 and this file's own prior revisions (git history) for full rationale.
 
 ## Open issues / blockers
-- This dev sandbox's .venv HAS `markdown` but NOT `weasyprint` (confirmed via gunicorn's own
-  interpreter). System libs (pango/cairo/gdk-pixbuf) ARE present, so `pip install weasyprint`
-  would likely work if ever wanted — but the report button no longer needs it. blue_report.py
-  is UNCHANGED/still weasyprint-only (not verified/fixed this session).
+- **Superseded this session:** weasyprint IS now installed in this venv (`69.0`, matches the
+  re-pinned `requirements.txt`) and both reports are PDF-only, hard-requiring it. On a FRESH
+  environment, `pip install -r requirements.txt` must succeed in installing it (system libs
+  pango/cairo/gdk-pixbuf are required — present on this host, not guaranteed elsewhere) or
+  every report route will 500 with a clear "weasyprint is not installed" message.
 - `OPENROUTER_API_KEY` is empty, `LLM_PROVIDER` unset (defaults openrouter) — the OLD
   LLM-authored report path fails regardless of weasyprint. Ollama IS reachable (`:11434`) if
-  a future session wants a free LLM-authored path (`LLM_PROVIDER=ollama`).
+  a future session wants a free LLM-authored path (`LLM_PROVIDER=ollama`). This is unaffected
+  by PDF-only — that only touches the deterministic path the routes actually call.
 - `outputs/*.html` IS now in `.gitignore` (the earlier gap is closed) — report HTML fallbacks
   won't be swept by `git add -A`.
 - The console runs as ROOT on port 80 (not 5000) via `redsee-console` gunicorn; root can read
-  the 640 `wazuh:wazuh` alerts.json. Basic auth is ON — creds in `.env`
+  the 640 `wazuh:wazuh` alerts.json. Auth is session-based (public `/` + `/login` → `/console`,
+  NOT HTTP Basic Auth — that was replaced), creds still sourced from `.env`
   (`REDSEE_DASH_USER`/`REDSEE_DASH_PASS`). If the console ever runs as non-root, add it to the
   `wazuh` group or it'll get 403 on `/analyze-logs` (route already returns a clear 403/404).
 - nuclei's `-t` paths are memory-bounded (D-024) — if widened, re-verify under
@@ -118,16 +111,40 @@ before the next live scan attempt.**
   failure (`isolation self-test FAILED`, `target_unreachable`) may be host contention, not a
   RedSee bug — rule this out before chasing a code fix.
 
-## Changed files (this session)
-- engine/params.py — `_QUERY_PATH_MARKERS` split into `_STRONG`/`_WEAK` two-tier ranking
-  (see Key decisions). Committed+pushed `69d31d7` on `feat/nuclei`.
-- tests/test_param_seeding.py — regression test for the strong-vs-weak tie-break, same commit.
-- scripts/scan_root_verify.py — pretty-printed (indent=2) discovery/caps output + prints the
-  scan_<id>.json path up front, same commit.
-- HANDOFF.md — this update.
-- (Earlier this session, already committed to `main` via the `feat/nuclei` merge `61740b3`:
-  Wazuh alerts.json → Blue Ops, README rewrite, D-025/D-026 discovery+seeding — see git log,
-  not repeated here to stay within this file's line budget.)
+## Changed files (this session — UNCOMMITTED)
+- pdf_templates/blue.css + red.css — `page-break-inside` moved table→row + `thead` repeats;
+  `table-layout: fixed` + `overflow-wrap`/`word-break` on `td`; NEW `th, td { box-sizing:
+  border-box }` (table right-margin fix); `pre` gained `white-space: pre-wrap` + `overflow-
+  wrap`/`word-break` (evidence-block right-margin fix). blue.css also gained `.events-table`
+  column-width rules + `.web-flag` styling.
+- blue_report.py — `_events_table` rewritten as escaped raw HTML (`class="events-table"`), not
+  a markdown pipe-table (NEW `import html`). `_mitre_from_event` returns (id, tactic,
+  technique) triples; `_mitre_section` shows a 4-column table; new "Framework Alignment"
+  prose cites MITRE ATT&CK®.
+- console_settings.py — `_ENV_MAP`/`_SECRET_FIELDS` extended with `wazuh_path`/`wazuh_api_url`/
+  `wazuh_api_user`/`wazuh_api_pass`; `save_settings` generalized to loop over ALL secret
+  fields; NEW `test_wazuh_connection()`; `public_settings()` returns the `wazuh_*` fields.
+- app.py — NEW `/api/settings/test-wazuh` route; `/analyze-logs` reads
+  `REDSEE_WAZUH_ALERTS_PATH` (live) before `WAZUH_ALERTS_DEFAULT_PATH`; report-route
+  docstrings reflect PDF-only (no code-path change — try/except already handled it).
+- templates/index.html — NEW "Wazuh / SIEM Source" Settings panel; topbar zone `UTC`→`AZT`.
+- static/script.js — `fmtClock`/`CONSOLE_TZ` renders `Asia/Baku`; `fmtTime` rewritten to parse
+  as a real `Date` and render through `fmtClock` (was: verbatim regex substring, wrong tz);
+  `applyWazuhSourceUI`/`currentWazuhSource`/`testWazuhSettings`; `fillSettings`/
+  `gatherSettings` extended.
+- static/style.css — `[data-view="settings"]` grey cursor override (`--ink-dim`); `.tag-ready`
+  generalized to cover `#wazuhStatusTag` too.
+- red_report.py — `_render_report` PDF-only (raises `RuntimeError`, no HTML branch). NEW
+  `_OWASP_MAP`/`_owasp_ref`/`_owasp_summary_table`; new "Framework Alignment" section.
+- log_ingestor.py — NEW `_mitre_info()` (supersedes `_mitre_ids`) zips Wazuh's
+  `rule.mitre.id`/`tactic`/`technique` arrays into the `[MITRE: ...]` marker.
+- requirements.txt / .env.example — `weasyprint` 60.2→69.0 (old pin broken vs. current pydyf);
+  documents `REDSEE_WAZUH_ALERTS_PATH`.
+- tests/ — NEW `test_console_settings.py` (17), NEW `test_blue_report_deterministic.py` (18,
+  incl. 6 for `_events_table`); `test_red_report_deterministic.py` rewritten (HTML-fallback
+  test → fail-loudly test + OWASP tests).
+- outputs/*.html (8 stray files) — deleted; untracked/gitignored artifacts from before the fix.
+- FROZEN, verified empty diff: `git diff --stat schemas.py engine/ modules/`.
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first
