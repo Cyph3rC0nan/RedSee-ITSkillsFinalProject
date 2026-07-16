@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RedSee — Sign in</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="public rn">
+
+  <div class="rn-bg" aria-hidden="true">
+    <div class="rn-bg-grad"></div>
+    <div class="rn-bg-glow"></div>
+    <div class="rn-bg-grid"></div>
+    <div class="rn-stars rn-stars-a"></div>
+    <div class="rn-stars rn-stars-b"></div>
+  </div>
+
+  <div class="auth-wrap">
+    <main class="auth-card animate-fade-up">
+      <img class="auth-logo" src="{{ url_for('static', filename='logo.png') }}"
+           alt="RedSee — radar-reticle emblem over the RedSee wordmark" />
+
+      <div class="auth-head">
+        <h1 class="auth-title">Operator sign-in</h1>
+        <p class="auth-sub mono">Restricted — authorized personnel only.</p>
+      </div>
+
+      <form class="auth-form" method="POST" action="{{ url_for('login') }}" id="authForm">
+        <label class="auth-field">
+          <span class="auth-label">Operator</span>
+          <input type="text" name="username" autocomplete="username"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus />
+        </label>
+
+        <label class="auth-field">
+          <span class="auth-label">Passphrase</span>
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+
+        {% if error %}
+        <p class="auth-error mono" role="alert" aria-live="polite">
+          <span class="auth-error-mark" aria-hidden="true">✕</span> {{ error }}
+        </p>
+        {% else %}
+        <p class="auth-error mono" role="alert" aria-live="polite" hidden></p>
+        {% endif %}
+
+        <button type="submit" class="btn btn-red auth-submit" id="authSubmit">
+          Enter console
+        </button>
+      </form>
+
+      <a class="auth-back" href="{{ url_for('home') }}"><span aria-hidden="true">←</span> Back to home</a>
+    </main>
+  </div>
+
+  <script>
+    /* Submitting state — disable the button and relabel it so a slow POST reads as
+       in-progress rather than an unresponsive click. */
+    (function () {
+      var form = document.getElementById("authForm");
+      var btn = document.getElementById("authSubmit");
+      if (form && btn) {
+        form.addEventListener("submit", function () {
+          btn.disabled = true; btn.textContent = "Authenticating…";
+        });
+      }
+    })();
+  </script>
+  <script src="{{ url_for('static', filename='rn-cursor.js') }}"></script>
+</body>
+</html>

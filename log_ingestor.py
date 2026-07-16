@@ -389,7 +389,7 @@ _REQ_RE = re.compile(
 
 def _clean_ip(ip: str) -> str:
     """Strip the IPv4-mapped-IPv6 `::ffff:` prefix Wazuh emits (e.g.
-    `::ffff:13.140.164.230` -> `13.140.164.230`)."""
+    `::ffff:203.0.113.10` -> `203.0.113.10`)."""
     ip = (ip or "").strip()
     if ip.lower().startswith("::ffff:"):
         ip = ip[7:]
@@ -406,25 +406,58 @@ def _url_from_full_log(full_log: str) -> str:
 
 def _mitre_ids(rule: dict) -> list:
     """Extract MITRE ATT&CK technique IDs from a Wazuh rule.mitre block."""
+    return [m["id"] for m in _mitre_info(rule)]
+
+
+def _mitre_info(rule: dict) -> list:
+    """Extract MITRE ATT&CK technique id/tactic/technique-name triples from a
+    Wazuh rule.mitre block. Wazuh emits `id`/`tactic`/`technique` as parallel
+    arrays (same index = same technique); zips them positionally and tolerates
+    a missing tactic/technique name for a given id (Wazuh's ruleset does not
+    always populate all three)."""
     if not isinstance(rule, dict):
         return []
     mitre = rule.get("mitre", {})
     if not isinstance(mitre, dict):
         return []
-    ids = mitre.get("id", [])
-    if isinstance(ids, str):
-        ids = [ids]
-    return [str(i) for i in ids if i]
+
+    def _as_list(v):
+        if isinstance(v, str):
+            return [v]
+        return list(v) if isinstance(v, list) else []
+
+    ids = [str(i) for i in _as_list(mitre.get("id")) if i]
+    tactics = _as_list(mitre.get("tactic"))
+    techniques = _as_list(mitre.get("technique"))
+    out = []
+    for i, tid in enumerate(ids):
+        out.append({
+            "id": tid,
+            "tactic": str(tactics[i]) if i < len(tactics) and tactics[i] else "",
+            "technique": str(techniques[i]) if i < len(techniques) and techniques[i] else "",
+        })
+    return out
 
 
-def _compose_detail(payload: str, full_log: str, mitre_ids: list) -> str:
+def _compose_detail(payload: str, full_log: str, mitre_info: list) -> str:
     """Build the Event.raw_payload "detail" string. Carries the attack payload
     (query string) or the raw access-log line, plus a parseable MITRE marker —
     the frozen Event schema has no dedicated context/mitre field, so this free-
-    form field is where that evidence rides (blue_report parses `[MITRE: ...]`)."""
+    form field is where that evidence rides (blue_report parses `[MITRE: ...]`).
+    Each technique renders as `T1190 (Initial Access: Exploit Public-Facing
+    Application)` when Wazuh supplied the tactic/technique names, else just the
+    bare id — never fabricated when the SIEM didn't provide it."""
     detail = payload or (full_log[:400] if full_log else "")
-    if mitre_ids:
-        marker = f"[MITRE: {', '.join(mitre_ids)}]"
+    if mitre_info:
+        parts = []
+        for m in mitre_info:
+            if m["tactic"] and m["technique"]:
+                parts.append(f"{m['id']} ({m['tactic']}: {m['technique']})")
+            elif m["tactic"] or m["technique"]:
+                parts.append(f"{m['id']} ({m['tactic'] or m['technique']})")
+            else:
+                parts.append(m["id"])
+        marker = f"[MITRE: {', '.join(parts)}]"
         detail = f"{detail} {marker}".strip() if detail else marker
     return detail
 
@@ -473,12 +506,12 @@ def _parse_wazuh_alerts(data) -> list[Event]:
                 rule_id = str(rule.get("id", "0"))
                 description = rule.get("description", "Unknown alert")
                 severity_level = int(rule.get("level", 1))
-                mitre_ids = _mitre_ids(rule)
+                mitre_info = _mitre_info(rule)
             else:
                 rule_id = str(alert.get("rule.id", "0"))
                 description = alert.get("rule.description", "Unknown alert")
                 severity_level = int(alert.get("rule.level", 1))
-                mitre_ids = []
+                mitre_info = []
 
             full_log = alert.get("full_log", "") or ""
 
@@ -513,7 +546,7 @@ def _parse_wazuh_alerts(data) -> list[Event]:
             if not raw_payload and target_url and "?" in target_url:
                 raw_payload = target_url.split("?", 1)[1]
 
-            raw_payload = _compose_detail(raw_payload, full_log, mitre_ids)
+            raw_payload = _compose_detail(raw_payload, full_log, mitre_info)
 
             events.append(Event(
                 source="Wazuh",

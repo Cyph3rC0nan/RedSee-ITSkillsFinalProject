@@ -4,12 +4,11 @@ Tests for red_report.py's DETERMINISTIC (no-LLM) report path — the generator
 app.py's /scan/<id>/report route actually calls.
 
 Unlike test_red_report.py's coverage of the LLM+weasyprint path (which
-legitimately needs `openai` + weasyprint and is skipped in this dev sandbox),
-this path needs only stdlib + the already-installed `markdown` package, so it
-must ALWAYS produce a real file — regardless of whether weasyprint happens to be
-importable on this host. Both render branches (pdf/html) are exercised by
-monkeypatching red_report._HAS_WEASYPRINT + a stub weasyprint module, so this
-suite passes identically whether or not weasyprint is actually installed.
+legitimately needs `openai` + weasyprint), this path needs no LLM call — but it
+IS PDF-only: weasyprint is a hard requirement, and there is no HTML fallback.
+The PDF branch is exercised by monkeypatching a stub weasyprint module (so this
+suite doesn't depend on the real package being importable on every host); a
+separate test asserts the fail-loudly behavior when weasyprint is unavailable.
 
 Run: PYTHONPATH=. pytest tests/test_red_report_deterministic.py -v
      (needs the `markdown` package — present in .venv; use .venv/bin/python -m pytest)
@@ -22,6 +21,7 @@ import pytest
 import red_report
 from red_report import (
     _build_deterministic_markdown, _tools_table, generate_deterministic_report,
+    _owasp_ref, _owasp_summary_table,
 )
 
 
@@ -99,43 +99,46 @@ def test_tools_table_escapes_pipe_in_detail():
     assert "a \\| b" in rows
 
 
-# ── generate_deterministic_report: real file, both render branches ───────────
+# ── OWASP Top 10 (2021) / CWE framework mapping ───────────────────────────────
 
-def test_always_produces_a_real_file_with_findings(tmp_path, monkeypatch):
-    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
-    path, fmt = generate_deterministic_report(_record(findings=_mock_findings()),
-                                              scan_id="withfindings")
-    assert Path(path).exists()
-    assert Path(path).stat().st_size > 500
-    assert fmt in ("pdf", "html")
-    assert Path(path).suffix == f".{fmt}"
-
-
-def test_always_produces_a_real_file_with_zero_findings(tmp_path, monkeypatch):
-    """The old route dead-ended with a 400 on 0 findings — the new generator
-    must NEVER refuse to produce a report just because nothing was found."""
-    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
-    path, fmt = generate_deterministic_report(_record(findings=[]), scan_id="clean0001")
-    assert Path(path).exists()
-    assert Path(path).stat().st_size > 500
+@pytest.mark.parametrize("finding_type,owasp_substr,cwe_substr", [
+    ("SQLi", "A03:2021", "CWE-89"),
+    ("XSS", "A03:2021", "CWE-79"),
+    ("IDOR", "A01:2021", "CWE-639"),
+    ("BrokenAuth", "A07:2021", "CWE-287"),
+])
+def test_owasp_ref_maps_each_frozen_finding_type(finding_type, owasp_substr, cwe_substr):
+    ref = _owasp_ref(finding_type)
+    assert owasp_substr in ref["owasp"]
+    assert cwe_substr in ref["cwe"]
 
 
-def test_renders_html_when_weasyprint_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
-    monkeypatch.setattr(red_report, "_HAS_WEASYPRINT", False)
-    path, fmt = generate_deterministic_report(_record(findings=_mock_findings()),
-                                              scan_id="htmlpath")
-    assert fmt == "html"
-    assert path.endswith(".html")
-    text = Path(path).read_text(encoding="utf-8")
-    assert "<html>" in text.lower()
-    assert _mock_findings()[0]["url"] in text
+def test_owasp_ref_unknown_type_is_uncategorized_not_fabricated():
+    ref = _owasp_ref("SomethingNotInTheSchema")
+    assert ref["owasp"] == "Uncategorized"
 
 
-def test_renders_pdf_when_weasyprint_available(tmp_path, monkeypatch):
-    """Stub weasyprint so this branch is exercised even when the real package
-    isn't installed on this host — proves the PDF path still wires up correctly
-    if/when weasyprint IS present in a future environment."""
+def test_owasp_summary_table_counts_by_category():
+    findings = [{"type": "SQLi"}, {"type": "SQLi"}, {"type": "XSS"}]
+    table = _owasp_summary_table(findings)
+    assert "A03:2021" in table
+    assert "| A03:2021 – Injection | CWE-89: SQL Injection | 2 |" in table
+
+
+def test_markdown_findings_carry_owasp_and_cwe():
+    md = _build_deterministic_markdown(_record(findings=_mock_findings()), "abc12345")
+    assert "OWASP Top 10 (2021)" in md
+    assert "CWE" in md
+    assert "Framework Alignment" in md
+
+
+# ── generate_deterministic_report: real file, PDF-only ───────────────────────
+
+def _stub_weasyprint(monkeypatch):
+    """Install a fake weasyprint.HTML that writes real PDF-magic bytes, so the
+    PDF-render branch is exercised hermetically (no dependency on the real
+    package being importable on whatever host runs this suite). Returns the
+    list of output paths write_pdf was called with."""
     calls = []
 
     class _FakeHTML:
@@ -149,9 +152,50 @@ def test_renders_pdf_when_weasyprint_available(tmp_path, monkeypatch):
     class _FakeWeasyprint:
         HTML = _FakeHTML
 
-    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
     monkeypatch.setattr(red_report, "_HAS_WEASYPRINT", True)
     monkeypatch.setattr(red_report, "weasyprint", _FakeWeasyprint)
+    return calls
+
+
+def test_always_produces_a_real_pdf_with_findings(tmp_path, monkeypatch):
+    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
+    _stub_weasyprint(monkeypatch)
+    path, fmt = generate_deterministic_report(_record(findings=_mock_findings()),
+                                              scan_id="withfindings")
+    assert Path(path).exists()
+    assert Path(path).stat().st_size > 500
+    assert fmt == "pdf"
+    assert Path(path).suffix == ".pdf"
+
+
+def test_always_produces_a_real_file_with_zero_findings(tmp_path, monkeypatch):
+    """The old route dead-ended with a 400 on 0 findings — the new generator
+    must NEVER refuse to produce a report just because nothing was found."""
+    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
+    _stub_weasyprint(monkeypatch)
+    path, fmt = generate_deterministic_report(_record(findings=[]), scan_id="clean0001")
+    assert Path(path).exists()
+    assert Path(path).stat().st_size > 500
+    assert fmt == "pdf"
+
+
+def test_raises_when_weasyprint_unavailable(tmp_path, monkeypatch):
+    """Reports are PDF-only now — there is no HTML fallback. If weasyprint isn't
+    importable, generation must fail loudly with a clear, actionable message,
+    not silently produce a lesser format."""
+    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
+    monkeypatch.setattr(red_report, "_HAS_WEASYPRINT", False)
+    with pytest.raises(RuntimeError, match="weasyprint"):
+        generate_deterministic_report(_record(findings=_mock_findings()), scan_id="nopdf")
+    assert list(tmp_path.glob("*.html")) == []   # never a lesser fallback file
+
+
+def test_renders_pdf_when_weasyprint_available(tmp_path, monkeypatch):
+    """Stub weasyprint so this branch is exercised even when the real package
+    isn't installed on this host — proves the PDF path still wires up correctly
+    if/when weasyprint IS present in a future environment."""
+    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
+    calls = _stub_weasyprint(monkeypatch)
 
     path, fmt = generate_deterministic_report(_record(findings=_mock_findings()),
                                               scan_id="pdfpath")
@@ -161,8 +205,24 @@ def test_renders_pdf_when_weasyprint_available(tmp_path, monkeypatch):
     assert calls == [path]
 
 
+@pytest.mark.skipif(not red_report._HAS_WEASYPRINT,
+                     reason="real weasyprint not importable in this environment")
+def test_renders_a_real_pdf_with_the_actually_installed_weasyprint(tmp_path, monkeypatch):
+    """Belt-and-suspenders: when the real weasyprint package IS installed (as it
+    is expected to be per requirements.txt), prove it produces an actual,
+    valid-looking PDF from our real pdf_templates/red.css — not just a stub."""
+    monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
+    path, fmt = generate_deterministic_report(_record(findings=_mock_findings()),
+                                              scan_id="reallib")
+    assert fmt == "pdf"
+    data = Path(path).read_bytes()
+    assert data[:5] == b"%PDF-"
+    assert len(data) > 1000
+
+
 def test_scan_id_defaults_when_absent_from_record(tmp_path, monkeypatch):
     monkeypatch.setattr(red_report, "OUTPUTS_DIR", tmp_path)
+    _stub_weasyprint(monkeypatch)
     path, _ = generate_deterministic_report({"findings": []}, scan_id=None)
     assert Path(path).exists()
 

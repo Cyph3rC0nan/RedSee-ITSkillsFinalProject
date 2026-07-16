@@ -2,7 +2,7 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 flask==3.0.0
 flask-cors==4.0.0
-weasyprint==60.2
+weasyprint==69.0
 markdown==3.5.1
 openai>=1.6.0
 python-dotenv==1.0.0

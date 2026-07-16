@@ -60,7 +60,7 @@ def test_web_attack_alert_mapped_correctly():
     e = next(e for e in web if "/rest/products/search" in e.target_url)
     assert e.severity_level == 6                       # rule.level preserved as int
     assert severity_bucket(e.severity_level) == "Medium"
-    assert e.src_ip == "13.140.164.230"               # ::ffff: prefix stripped
+    assert e.src_ip == "203.0.113.10"                  # ::ffff: prefix stripped
     assert e.target_url == "/rest/products/search?q=<script>alert(1)</script>"
     assert "web attack" in e.description.lower()
     # the injected payload is surfaced in the detail field
@@ -127,7 +127,7 @@ def test_last_n_zero_returns_empty():
 # ── helpers ─────────────────────────────────────────────────────────────
 
 def test_clean_ip_strips_ipv4_mapped_prefix():
-    assert _clean_ip("::ffff:13.140.164.230") == "13.140.164.230"
+    assert _clean_ip("::ffff:203.0.113.10") == "203.0.113.10"
     assert _clean_ip("10.0.0.1") == "10.0.0.1"
     assert _clean_ip("") == ""
 

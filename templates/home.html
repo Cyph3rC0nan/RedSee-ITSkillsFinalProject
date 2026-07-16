@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RedSee — Authorized Security Operations</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="public rn">
+
+  <!-- Global red-noir background: gradient, red glow, grid, drifting stars -->
+  <div class="rn-bg" aria-hidden="true">
+    <div class="rn-bg-grad"></div>
+    <div class="rn-bg-glow"></div>
+    <div class="rn-bg-grid"></div>
+    <div class="rn-stars rn-stars-a"></div>
+    <div class="rn-stars rn-stars-b"></div>
+  </div>
+  <div class="rn-topblur" aria-hidden="true"></div>
+
+  <!-- Nav -->
+  <header class="rn-nav-wrap">
+    <nav class="rn-nav" aria-label="Primary">
+      <a class="rn-brand" href="/" aria-label="RedSee home">
+        <img class="rn-brand-mark" src="{{ url_for('static', filename='logo.png') }}" alt="" />
+        <span class="rn-brand-name"><span class="mark-red">RED</span><span class="mark-see">SEE</span></span>
+      </a>
+      <div class="rn-nav-links">
+        <a class="rn-navlink" href="#capabilities">Capabilities</a>
+        <a class="rn-navlink" href="#toolchain">Toolchain</a>
+        <a class="rn-navlink" href="#workflow">Workflow</a>
+      </div>
+      <div class="rn-nav-actions">
+        <a class="rn-navlink rn-navlink-strong" href="{{ url_for('login') }}">Sign in</a>
+        <a class="rn-cta rn-cta-sm" href="{{ url_for('login') }}">Open console <span class="rn-arrow" aria-hidden="true">→</span></a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="rn-main">
+
+    <!-- Hero -->
+    <section class="rn-hero">
+      <img class="rn-hero-logo animate-fade-up" style="animation-delay:.05s"
+           src="{{ url_for('static', filename='logo.png') }}"
+           alt="RedSee — a concentric radar-reticle emblem over the RedSee wordmark" />
+
+      <div class="rn-badge animate-fade-up" style="animation-delay:.15s">
+        <span class="rn-badge-dot" aria-hidden="true"><span class="rn-badge-ping"></span><span class="rn-badge-core"></span></span>
+        <span>Detection-only · sandboxed · scope-authorized</span>
+      </div>
+
+      <h1 class="rn-title animate-fade-up" style="animation-delay:.25s">
+        <span class="rn-title-line">Run the attack.</span>
+        <span class="rn-title-line">Watch it surface in your
+          <span class="rn-accent">defenses<svg class="rn-underline" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><path d="M0 6 Q 50 11 100 5" stroke="currentColor" stroke-width="2" fill="none"/></svg></span>.
+        </span>
+      </h1>
+
+      <p class="rn-lede animate-fade-up" style="animation-delay:.35s">
+        RedSee drives authorized, sandboxed red-team scans and ingests your Wazuh SIEM in one
+        console — so the request your agent sends shows up in your blue-team feed, tagged with
+        MITRE ATT&amp;CK context and triaged, moments later.
+      </p>
+
+      <div class="rn-cta-row animate-fade-up" style="animation-delay:.45s">
+        <a class="rn-cta" href="{{ url_for('login') }}"><span>Get started</span> <span class="rn-arrow" aria-hidden="true">→</span></a>
+        <a class="rn-cta-ghost" href="#capabilities">See how it works</a>
+      </div>
+    </section>
+
+    <!-- Toolchain strip (real integrations) -->
+    <section class="rn-tools" id="toolchain">
+      <p class="rn-tools-label">Drives industry-standard tooling</p>
+      <div class="rn-tools-list">
+        <span>sqlmap</span><span>Dalfox</span><span>nuclei</span><span>httpx</span><span>ffuf</span><span>Wazuh</span><span>Docker</span>
+      </div>
+    </section>
+
+    <!-- Capabilities bento -->
+    <section class="rn-features" id="capabilities">
+      <div class="rn-sec-head">
+        <h2 class="rn-sec-title">One console for <span class="rn-accent">offense and defense</span></h2>
+        <p class="rn-sec-sub">The exploit your agent fires and the alert it trips, side by side — evidence-gated end to end.</p>
+      </div>
+
+      <div class="rn-bento">
+        <article class="rn-card rn-card-lg">
+          <span class="rn-card-ic ic-red" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+          </span>
+          <h3 class="rn-card-title">Agent-driven sandboxed scanning</h3>
+          <p class="rn-card-body">An LLM plans and drives sqlmap, Dalfox, and nuclei inside a locked-down, egress-filtered container — target IP only, non-root, read-only rootfs, capabilities dropped. Detection-only: no exploit, dump, or out-of-band flags, ever.</p>
+          <span class="rn-card-foot">Offense <span class="rn-arrow" aria-hidden="true">→</span></span>
+          <span class="rn-card-wash wash-red" aria-hidden="true"></span>
+        </article>
+
+        <article class="rn-card rn-card-wide">
+          <span class="rn-card-ic ic-cyan" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          </span>
+          <h3 class="rn-card-title">Live Wazuh SIEM triage</h3>
+          <p class="rn-card-body">Ingest <span class="mono">alerts.json</span> as it's written, bucket by severity, and watch your own scan traffic light up as web-attack alerts — each carrying the MITRE technique the SIEM mapped it to.</p>
+          <span class="rn-card-wash wash-cyan" aria-hidden="true"></span>
+        </article>
+
+        <article class="rn-card">
+          <span class="rn-card-ic ic-neutral" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 13l9 5 9-5"/></svg>
+          </span>
+          <h3 class="rn-card-title">One record, every format</h3>
+          <p class="rn-card-body">Each run collapses to a single scan record and exports SARIF, JSON, and a deterministic report — no LLM or API key needed to generate it.</p>
+        </article>
+
+        <article class="rn-card">
+          <span class="rn-card-ic ic-red" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6l7-3Z"/><path d="M9 12l2 2 4-4"/></svg>
+          </span>
+          <h3 class="rn-card-title">Evidence-gated findings</h3>
+          <p class="rn-card-body">A finding exists only when the tool's own parsed output proves it — never a model's guess.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Principle banner (the reference's red banner, filled with a true statement) -->
+    <section class="rn-banner">
+      <div class="rn-banner-in">
+        <span class="rn-banner-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6l7-3Z"/><path d="M9 12l2 2 4-4"/></svg>
+        </span>
+        <p class="rn-banner-quote">A finding is only real if a tool proved it. RedSee never lets a model invent a vulnerability — every result traces back to parsed sqlmap, Dalfox, or nuclei output.</p>
+        <p class="rn-banner-attr">RedSee evidence-gating principle</p>
+      </div>
+    </section>
+
+    <!-- Workflow (a real 3-step sequence — numbering is earned here) -->
+    <section class="rn-steps-sec" id="workflow">
+      <div class="rn-sec-head">
+        <h2 class="rn-sec-title">Three steps, one authorized run</h2>
+        <p class="rn-sec-sub">Nothing active happens until you attest scope.</p>
+      </div>
+      <ol class="rn-steps">
+        <li class="rn-step">
+          <span class="rn-step-n">01</span>
+          <h3 class="rn-step-title">Authorize the scope</h3>
+          <p class="rn-step-body">Name the target and attest permission. The scope gate refuses anything off the allow-list before a single request is sent.</p>
+        </li>
+        <li class="rn-step">
+          <span class="rn-step-n">02</span>
+          <h3 class="rn-step-title">Run the scan</h3>
+          <p class="rn-step-body">The agent crawls, extracts injectable parameters, and drives the tools in the sandbox — pick fast, standard, or deep.</p>
+        </li>
+        <li class="rn-step">
+          <span class="rn-step-n">03</span>
+          <h3 class="rn-step-title">Triage in the SIEM view</h3>
+          <p class="rn-step-body">Findings export to SARIF, JSON, and PDF; the same traffic surfaces in the Blue Ops feed, bucketed and MITRE-tagged.</p>
+        </li>
+      </ol>
+    </section>
+
+    <!-- Final CTA (real action — no waitlist/email capture) -->
+    <section class="rn-final">
+      <h2 class="rn-final-title">Ready to run an <span class="rn-accent">authorized</span> scan?</h2>
+      <p class="rn-final-sub">Sign in to queue a target and watch offense and defense converge.</p>
+      <a class="rn-cta rn-cta-lg" href="{{ url_for('login') }}"><span>Open the console</span> <span class="rn-arrow" aria-hidden="true">→</span></a>
+      <p class="rn-final-note">Authorized testing only · the sandbox has no public-internet egress.</p>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="rn-foot">
+    <div class="rn-foot-cols">
+      <div class="rn-foot-brand">
+        <span class="rn-brand-name"><span class="mark-red">RED</span><span class="mark-see">SEE</span></span>
+        <p class="rn-foot-blurb">Authorized web and API pentesting with an agent-driven, sandboxed engine and live SIEM triage — offense and defense in one console.</p>
+      </div>
+      <div class="rn-foot-col">
+        <h4 class="rn-foot-h">Explore</h4>
+        <a href="#capabilities">Capabilities</a>
+        <a href="#toolchain">Toolchain</a>
+        <a href="#workflow">Workflow</a>
+      </div>
+      <div class="rn-foot-col">
+        <h4 class="rn-foot-h">Access</h4>
+        <a href="{{ url_for('login') }}">Sign in</a>
+        <a href="{{ url_for('login') }}">Open console</a>
+      </div>
+    </div>
+
+    <div class="rn-foot-word" aria-hidden="true">REDSEE</div>
+
+    <div class="rn-foot-bar">
+      <span>© 2026 RedSee · Authorized testing only</span>
+      <span>Detection-only · Sandboxed · Evidence-gated</span>
+    </div>
+  </footer>
+
+  <script src="{{ url_for('static', filename='rn-cursor.js') }}"></script>
+</body>
+</html>

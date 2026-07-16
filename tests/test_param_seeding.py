@@ -122,6 +122,23 @@ def test_seeding_dedupes_against_already_crawled_paths():
     assert targets == []
 
 
+def test_strong_query_verb_path_beats_weak_noun_only_path_under_tight_cap():
+    """Live-evidenced bug: a standard-mode root scan against redsees.com capped
+    seed_paths=1 and seeded /api/Products instead of the real SQLi target
+    /rest/products/search. Both matched the OLD flat _QUERY_PATH_MARKERS set
+    (via "products"), so the tie-break fell to alphabetical URL order ("api" <
+    "rest") and picked the wrong one. /rest/products/search also matches a
+    STRONG verb marker ("search"); /api/Products matches only the WEAK noun
+    marker ("products") — the strong match must win regardless of URL string."""
+    eps = [
+        _ep("http://h/api/Products", etype="api"),
+        _ep("http://h/rest/products/search", etype="api"),
+    ]
+    targets = build_seed_targets(eps, param_names=["q"], max_paths=1, batch_size=10)
+    assert len(targets) == 1
+    assert targets[0].url.split("?", 1)[0] == "http://h/rest/products/search"
+
+
 def test_max_paths_cap_bounds_seeded_paths():
     eps = [_ep(f"http://h/rest/e{i}", etype="api") for i in range(6)]
     targets = build_seed_targets(eps, param_names=["q"], max_paths=2, batch_size=10)

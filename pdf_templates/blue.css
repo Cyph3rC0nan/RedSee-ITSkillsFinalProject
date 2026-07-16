@@ -61,25 +61,59 @@ table {
     border-collapse: collapse;
     margin: 15px 0;
     font-size: 9pt;
-    page-break-inside: avoid;
+    table-layout: fixed;
 }
+
+/* Let a tall table (e.g. the full normalized-events list) break across pages
+   instead of being pushed whole onto the next one — the old `page-break-
+   inside: avoid` on `table` forced that, which left a large blank gap under
+   whatever section header preceded it. Repeat the header row on each page a
+   table spans; keep only a single ROW from splitting across the break. */
+thead { display: table-header-group; }
+tr { page-break-inside: avoid; }
+
+/* border-box is required here: table-layout:fixed applies each column's
+   percentage width to the CONTENT box only by default (content-box), so
+   padding+border get added ON TOP of that — across 7 columns that extra
+   ~22px/column accumulates into real overflow, pushing the rightmost
+   columns (Source IP/Target) past the page's right margin. border-box folds
+   padding+border back inside the specified width so the percentages actually
+   sum to the table's real rendered width. */
+th, td { box-sizing: border-box; }
 
 th {
     background: #1a5276;
     color: white;
-    padding: 8px 12px;
+    padding: 8px 10px;
     text-align: left;
     font-weight: 600;
     border: 1px solid #1a5276;
 }
 
 td {
-    padding: 6px 12px;
+    padding: 6px 10px;
     border: 1px solid #ddd;
     vertical-align: top;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 tr:nth-child(even) td { background: #eaf2f8; }
+
+/* Normalized-events table (blue_report._events_table) — 7 dense columns
+   (Lvl/Sev/Time/Rule/Description/Source IP/Target). With table-layout:fixed
+   and no explicit widths these were squeezed near-evenly, cutting off the
+   free-text Description/Target columns that carry the actual log detail.
+   Give those two the bulk of the width instead. */
+.events-table { font-size: 8pt; }
+.events-table th:nth-child(1), .events-table td:nth-child(1) { width: 6%; }   /* Lvl */
+.events-table th:nth-child(2), .events-table td:nth-child(2) { width: 8%; }   /* Sev */
+.events-table th:nth-child(3), .events-table td:nth-child(3) { width: 11%; }  /* Time */
+.events-table th:nth-child(4), .events-table td:nth-child(4) { width: 8%; }   /* Rule */
+.events-table th:nth-child(5), .events-table td:nth-child(5) { width: 30%; }  /* Description */
+.events-table th:nth-child(6), .events-table td:nth-child(6) { width: 12%; }  /* Source IP */
+.events-table th:nth-child(7), .events-table td:nth-child(7) { width: 25%; }  /* Target */
+.events-table .web-flag { color: #c0392b; font-weight: 700; }
 
 code {
     background: #eaf2f8;
@@ -99,6 +133,12 @@ pre {
     line-height: 1.5;
     page-break-inside: avoid;
     margin: 10px 0;
+    /* Same fix as red.css: <pre> defaults to white-space:pre (never wraps),
+       which would run a long unbroken line (e.g. a raw log line) off the
+       page. pre-wrap preserves whitespace/newlines but allows wrapping. */
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
 }
 
 pre code { background: none; color: inherit; padding: 0; }

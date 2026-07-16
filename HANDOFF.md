@@ -1,104 +1,91 @@
 # RedSee — Session Handoff
 
-**Last updated:** 2026-07-15T11:35:00Z
-**Current milestone:** Blue Ops wired to REAL Wazuh alerts.json (JSONL) — ingest → events
-feed + threat levels → deterministic (no-LLM) blue incident report. UNCOMMITTED. Live-
-deployed (service restarted, port 80) and proven end-to-end against the real console.
+**Last updated:** 2026-07-16T03:15:00Z
+**Current milestone:** Console UX polish, part 2 — blue-report PDF layout fixes (column
+widths, page-break gap, a follow-up right-margin overflow, AND the red report's Evidence
+`<pre>`-block overflow), a new Wazuh/SIEM Source Settings panel, a grey cursor on the Settings
+tab, AND the console's `fmtTime()` (scan times, event times, finding times — every non-clock
+timestamp in the frontend) converted to Asia/Baku, matching the topbar clock fixed earlier.
+Builds on this session's earlier work (Baku clock, PDF-only reports, OWASP/MITRE citations).
+All live-verified with geometrically-correct PDF tooling (pdfminer.six — see Key decisions;
+pypdf's raw text-matrix is NOT trustworthy for position checks). UNCOMMITTED.
 
 ## Next step
-Blue Ops / Wazuh-ingest task is COMPLETE and live-proven — commit it (see "Changed files").
-`.gitignore` already covers `outputs/*.html` (the earlier gap is closed), so `git add -A` is
-safe now w.r.t. report artifacts. After that: idor/auth agents (the last two static modules
-to convert to the agent-driven pattern).
+Review + commit this session's changes (see "Changed files" below), then push. The prior
+session's D-025/D-026 live re-verification may still be outstanding — check with the user,
+this session didn't touch it.
 
 ## In progress
-nothing
+nothing (this session's work is complete and live-verified; no known open PDF-layout or
+timezone issues)
 
 ## Recently completed (last 5)
-- Wazuh alerts.json → Blue Ops (ingest + feed + threat levels + deterministic blue report).
-  log_ingestor.py: `ingest_log_file(filepath, last_n=None, since_minutes=None)` — NEW
-  `_read_records()` handles JSONL (Wazuh's real shape, one alert/line, malformed lines
-  skipped) AND the old JSON-array/object fixtures; `last_n` tails the file (newest last),
-  `since_minutes` best-effort time-window. Enriched `_parse_wazuh_alerts`: rule.level→
-  severity_level (raw int), rule.description→description, data.srcip→src_ip (`::ffff:`
-  stripped), data.url OR request parsed from full_log→target_url, query-string/full_log +
-  `[MITRE: T…]` marker→raw_payload (frozen Event has no context field, so MITRE rides in the
-  free-form detail field). NEW helpers `severity_bucket()` (≥12 Crit/7–11 High/4–6 Med/<4
-  Low), `is_web_attack()` (31xxx or attack/web group). app.py `/analyze-logs`: accepts a
-  server-side `path` (default `/var/ossec/logs/alerts/alerts.json`) + `last_n`(500 default)/
-  `minutes`, OR an upload, OR inline events; `/generate-blue-report` now calls the
-  deterministic generator (always downloads a file). blue_report.py: NEW
-  `generate_deterministic_blue_report(events)` (incident summary, events-by-severity, MITRE
-  seen, top source IPs, web-attack section, all-events table) → reuses red_report._render_
-  report (weasyprint PDF if present, else self-contained HTML; no LLM). Frontend: "Load
-  alerts.json" button + web-attack row highlight (rule 31xxx) + WEB badge. 22 new offline
-  tests (real captured alert lines); schemas.py/engine untouched. LIVE proven: /analyze-logs
-  → 300 events, 10 web-attack, the /rest/products/search?q=<script>alert(1)</script> XSS
-  (rule 31106) present; blue report downloads a real 23KB file listing it — 2026-07-15
-- Skip legibility + Red Report export fix. DIAGNOSIS (confirmed against a real record,
-  `outputs/scan_0975e0a2.json`, before changing anything): sqli/xss "skipped" on a 502'd
-  target was CORRECT D-024 behavior (0 param-bearing endpoints -> nothing to inject), not a
-  bug — `session.get()` doesn't raise on an HTTP error status, so crawl silently drops an
-  unreachable root and returns 0 endpoints with no exception. The reason already existed in
-  `tools_run[].detail` but the UI only showed it as a hover tooltip. Fix (skip CONDITION
-  untouched): modules/scan.py builds a 3-way reason (no-params / target-unreachable /
-  target-responded-but-crawl-empty, using httpx's already-collected reachability signal,
-  zero new network calls); script.js shows `.detail` as a visible sub-line, not just a
-  tooltip. SEPARATE bug: `/scan/<id>/report` 400'd on 0-finding scans AND weasyprint was
-  confirmed missing in gunicorn's own venv AND `OPENROUTER_API_KEY` is empty — installing
-  weasyprint alone would NOT have fixed the button. Fix: red_report.py gained
-  `generate_deterministic_report()` — builds the same structured report from the scan record
-  via string templates (no LLM call), renders PDF if weasyprint is importable else
-  self-contained HTML (needs only the already-installed `markdown` pkg). app.py's route
-  prefers `scan_<id>.json`, never 400s on 0 findings, only 404s on a truly unknown id. Live-
-  proven end-to-end (unreachable-port scan -> legible skip reason; /market/* standard scan ->
-  6 real XSS + a real downloadable report; 0-finding scan -> real report, not 400; unknown id
-  -> clear 404). 11 new offline tests; schemas.py/engine/sandbox.py untouched — 2026-07-14
-- Param-targeted injection + scan modes + nuclei OOM fix (D-024, COMMITTED+PUSHED as 0b28c9e).
-  `engine/params.py` ranks/caps injectable targets; `run_scan(mode=fast|standard|deep)` drives
-  agents directly with per-mode depth; independent tools run concurrently. **nuclei "timeout"
-  was a 256 MB sandbox OOM** — fixed by scoping `-t` to memory-safe dirs. DECISIONS.md D-024.
-- Built `storage/scan_store.py` (COMMITTED) — SQLite queue/status/history over run_scan; gates
-  up front, bounded worker pool, orphaned rows reconcile to `error`. DECISIONS.md D-023 — 07-13
+- **Fixed the OTHER timezone bug: every non-clock timestamp in the console was still raw
+  UTC.** `fmtTime(iso)` (Red Ops scan list started/created time, scan detail panel started/
+  finished, Blue Ops events table timestamp) used to regex-extract `HH:MM:SS` VERBATIM from
+  whatever ISO string it got — UTC for scan/finding timestamps, the Wazuh SIEM's OWN server
+  offset for event timestamps (`log_ingestor.py` passes Wazuh's raw `timestamp` through
+  as-is, e.g. `...+0200`, never normalized). Rewritten to parse it as a real `Date` (resolves
+  `Z` or any explicit numeric offset correctly) and render through the SAME `fmtClock`/
+  Asia-Baku formatter as the topbar clock. An offset-less string (rare/defensive) is treated
+  as UTC rather than left to browser-local interpretation. Verified in Node against 7 cases
+  (UTC+Z, Wazuh +0200, Wazuh +04:00, offset-less, empty, garbage) — all correct.
+- **Fixed the blue-report PDF layout end-to-end** (4 related bugs, found + fixed across this
+  session): (1) illegible log table — `.events-table` now explicit raw HTML with per-column
+  widths (Description/Target get the bulk); (2) a big blank-page gap — `page-break-inside`
+  moved table→row + `thead` repeats; (3) MY OWN fix for (1) introduced a right-margin
+  overflow — `th`/`td` lacked `box-sizing: border-box`, so padding+border added on top of each
+  column's % width under `table-layout:fixed`, pushing the table wider than the page; (4)
+  found during verification of (3): red_report's Evidence `<pre>` blocks (raw sqlmap/Dalfox
+  output, single unbreakable lines) also ran off the page — `pre` defaults to `white-space:
+  pre` (never wraps), fixed with `pre-wrap` + `overflow-wrap`/`word-break`. ALL fixed in BOTH
+  red.css/blue.css. Live-verified with `pdfminer.six` (NOT raw `pypdf` — see Key decisions):
+  zero overflowing lines across real generated reports (5626 blue-report lines, 351
+  red-report lines checked).
+- New Settings panel "Wazuh / SIEM Source" — file path or live API (URL/user/password), a
+  `file`/`api` toggle; new `/api/settings/test-wazuh` route; `console_settings.py`'s secret
+  handling generalized to cover it. Live-verified: saved, reflected back masked, `/analyze-logs`
+  picked up the new path with no restart. Plus: grey cursor on the Settings tab
+  (`[data-view="settings"]` CSS override, matching the Red/Blue Ops red/cyan pattern).
+- New `tests/test_console_settings.py` (17 tests) + 6 new tests for `_events_table`'s rewrite
+  in `test_blue_report_deterministic.py`. 415 tests pass repo-wide (6 pre-existing unrelated
+  live-DVWA failures); frozen paths still empty diff.
+- Earlier this session: Baku clock (topbar), PDF-only reports (weasyprint re-pinned
+  `60.2`→`69.0`), OWASP/MITRE citations — see Key decisions below, not repeated in full here.
 
 ## Key decisions
-- Blue: MITRE has no home in the frozen 8-field Event, so it rides in `raw_payload` as a
-  parseable `[MITRE: T1190]` marker appended after the attack payload/full_log. blue_report
-  regexes it back out for the "MITRE techniques seen" section. Web-attack highlight keys off
-  rule_id 31xxx (derivable from Event.rule_id — `groups` isn't a schema field).
-- Blue report reuses `red_report._render_report` (not its own weasyprint import) so the
-  deterministic PDF/HTML fallback path is shared. `/generate-blue-report` now calls the
-  deterministic generator; old LLM `generate_blue_report` left as an optional path, not deleted.
-- `/analyze-logs` reads a server-side `path` (default Wazuh alerts.json) with a `last_n`=500
-  cap so a 1000s-line JSONL never floods the UI; JSONL detection is "first non-empty line
-  parses as JSON → parse line-by-line, skip malformed", with JSON-array/object fallbacks.
-- Report route calls a NEW deterministic generator, not "fix weasyprint + keep the LLM path
-  primary": even with weasyprint installed the LLM call would still fail (`OPENROUTER_API_KEY`
-  empty). A report button must not depend on a paid API key/network/model.
-- Skip reasons are computed from data ALREADY collected in the same scan (crawl count +
-  httpx reachability) — zero new calls. The skip CONDITION in modules/scan.py is
-  byte-identical to before; only the `detail` string changed (tools_run isn't in schemas.py).
-- storage/scan_store.py is a NEW top-level package (not engine/scan_store.py) — it imports
-  modules.scan (which imports engine.*), so storage->modules->engine avoids an import cycle.
-- modules/scan.py (not engine/orchestrator.py) — imports BOTH modules (sqli/xss) and engine
-  (recon/nuclei); engine must never import modules/. Unified file `scan_<id>.json`; per-tool
-  files share the SAME bare scan_id.
-- D-024: nuclei's real failure was a 256 MB OOM (not a slow scan) — only found by running
-  THROUGH the real sandbox (a raw `--network host` run looked fine and hid it).
-- Full decision history + rationale: DECISIONS.md D-012 through D-024.
+- `_events_table` emits raw HTML (`class="events-table"`, `html.escape()`'d every field) not
+  a markdown pipe-table, so blue.css can size ITS columns via `:nth-child(n)` without touching
+  the report's other, simpler tables. Escaping matters: real Wazuh events carry literal
+  `<script>` payloads that must render as inert text.
+- `table { page-break-inside: avoid }` → moved to `tr` in BOTH red.css/blue.css (same latent
+  bug, found while fixing blue's complaint — red has tall tables too). The bug pushed a whole
+  tall table to the next page (blank gap) instead of letting it split with a repeated header.
+- Wazuh settings generalize the EXISTING `_ENV_MAP`/secret-masking machinery (built for the
+  LLM api_key) — `_SECRET_FIELDS` is now iterated generically. `wazuh_source` (file/api) does
+  NOT clear the other side's config on switch (unlike LLM `provider`) — file path and API
+  creds are independent, both may stay configured at once.
+- **PDF-only, no HTML fallback** (weasyprint now installed + re-pinned `69.0`, hard-required).
+  OWASP/MITRE citations (`_owasp_ref`/`_OWASP_MAP`, richer `_mitre_info`) are presentation-only.
+  Report routes call the deterministic generator, never the LLM path. storage/scan_store.py +
+  modules/scan.py layering, D-024/D-025/D-026 all still true/unchanged — see DECISIONS.md
+  D-012–D-026 and this file's own prior revisions (git history) for full rationale.
 
 ## Open issues / blockers
-- This dev sandbox's .venv HAS `markdown` but NOT `weasyprint` (confirmed via gunicorn's own
-  interpreter). System libs (pango/cairo/gdk-pixbuf) ARE present, so `pip install weasyprint`
-  would likely work if ever wanted — but the report button no longer needs it. blue_report.py
-  is UNCHANGED/still weasyprint-only (not verified/fixed this session).
+- **Superseded this session:** weasyprint IS now installed in this venv (`69.0`, matches the
+  re-pinned `requirements.txt`) and both reports are PDF-only, hard-requiring it. On a FRESH
+  environment, `pip install -r requirements.txt` must succeed in installing it (system libs
+  pango/cairo/gdk-pixbuf are required — present on this host, not guaranteed elsewhere) or
+  every report route will 500 with a clear "weasyprint is not installed" message.
 - `OPENROUTER_API_KEY` is empty, `LLM_PROVIDER` unset (defaults openrouter) — the OLD
   LLM-authored report path fails regardless of weasyprint. Ollama IS reachable (`:11434`) if
-  a future session wants a free LLM-authored path (`LLM_PROVIDER=ollama`).
+  a future session wants a free LLM-authored path (`LLM_PROVIDER=ollama`). This is unaffected
+  by PDF-only — that only touches the deterministic path the routes actually call.
 - `outputs/*.html` IS now in `.gitignore` (the earlier gap is closed) — report HTML fallbacks
   won't be swept by `git add -A`.
 - The console runs as ROOT on port 80 (not 5000) via `redsee-console` gunicorn; root can read
-  the 640 `wazuh:wazuh` alerts.json. Basic auth is ON — creds in `.env`
+  the 640 `wazuh:wazuh` alerts.json. Auth is session-based (public `/` + `/login` → `/console`,
+  NOT HTTP Basic Auth — that was replaced), creds still sourced from `.env`
   (`REDSEE_DASH_USER`/`REDSEE_DASH_PASS`). If the console ever runs as non-root, add it to the
   `wazuh` group or it'll get 403 on `/analyze-logs` (route already returns a clear 403/404).
 - nuclei's `-t` paths are memory-bounded (D-024) — if widened, re-verify under
@@ -117,29 +104,47 @@ nothing
   notfound?path=) to exercise injection.
 - Container lifecycle is volatile across turns: check `docker ps`/`curl` before assuming a
   target is up.
+- THIS server (vmi3362886, 8GB) runs the target's Docker sinks container, a native Juice
+  Shop Node process, the FULL Wazuh SIEM stack, AND whatever Claude Code sessions happen to
+  be open — free memory can drop to <300MB just from that idle baseline. Before a live scan,
+  check `free -h`/`ps aux --sort=-%mem` and close stale sessions first; a low-memory scan
+  failure (`isolation self-test FAILED`, `target_unreachable`) may be host contention, not a
+  RedSee bug — rule this out before chasing a code fix.
 
-## Changed files (this session — Wazuh alerts.json → Blue Ops; UNCOMMITTED)
-- log_ingestor.py — `ingest_log_file(filepath, last_n=None, since_minutes=None)`; NEW
-  `_read_records()` (JSONL + JSON-array/object), `_record_timestamp()`/`_filter_since()`,
-  `severity_bucket()`, `is_web_attack()`, `_clean_ip()`, `_url_from_full_log()`,
-  `_mitre_ids()`, `_compose_detail()`; `_parse_wazuh_alerts` enriched (full_log/mitre/IP).
-  `WAZUH_ALERTS_DEFAULT_PATH` const. Backward-compatible: old sample fixtures still parse.
-- blue_report.py — NEW `generate_deterministic_blue_report()` + section builders
-  (`_severity_table`/`_mitre_section`/`_top_source_ips`/`_events_table`/…); imports
-  `_render_report` from red_report. OLD LLM `generate_blue_report` UNTOUCHED.
-- app.py — `/analyze-logs` accepts server-side `path`(default Wazuh alerts.json)+`last_n`/
-  `minutes` OR upload OR inline events; `/generate-blue-report` → deterministic generator,
-  returns `{"report_url","format"}`. NEW `_INGEST_DEFAULT_LAST_N=500`.
-- templates/index.html — "Load alerts.json" ingest row (`#alertsBtn`/`#alertsLastN`).
-- static/script.js — `#alertsBtn` handler; `isWebAttack()`; web-attack row highlight + WEB
-  badge in `renderEvents`/`renderDist`.
-- static/style.css — `.web-badge`/`.events-table tr.web-attack`/`.dist-web`.
-- tests/test_blue_ingest.py (NEW, 22 tests) + tests/fixtures/wazuh_alerts_sample.jsonl (NEW,
-  real captured alert lines + a malformed line).
-- FROZEN, verified empty diff: `git diff --stat schemas.py engine/sandbox.py`.
-- Prior UNCOMMITTED work (skip legibility + red report fix: modules/scan.py, red_report.py,
-  app.py /scan report route, script.js, index.html, style.css, test_red_report_deterministic.py)
-  is ALSO still uncommitted — commit alongside or separately.
+## Changed files (this session — UNCOMMITTED)
+- pdf_templates/blue.css + red.css — `page-break-inside` moved table→row + `thead` repeats;
+  `table-layout: fixed` + `overflow-wrap`/`word-break` on `td`; NEW `th, td { box-sizing:
+  border-box }` (table right-margin fix); `pre` gained `white-space: pre-wrap` + `overflow-
+  wrap`/`word-break` (evidence-block right-margin fix). blue.css also gained `.events-table`
+  column-width rules + `.web-flag` styling.
+- blue_report.py — `_events_table` rewritten as escaped raw HTML (`class="events-table"`), not
+  a markdown pipe-table (NEW `import html`). `_mitre_from_event` returns (id, tactic,
+  technique) triples; `_mitre_section` shows a 4-column table; new "Framework Alignment"
+  prose cites MITRE ATT&CK®.
+- console_settings.py — `_ENV_MAP`/`_SECRET_FIELDS` extended with `wazuh_path`/`wazuh_api_url`/
+  `wazuh_api_user`/`wazuh_api_pass`; `save_settings` generalized to loop over ALL secret
+  fields; NEW `test_wazuh_connection()`; `public_settings()` returns the `wazuh_*` fields.
+- app.py — NEW `/api/settings/test-wazuh` route; `/analyze-logs` reads
+  `REDSEE_WAZUH_ALERTS_PATH` (live) before `WAZUH_ALERTS_DEFAULT_PATH`; report-route
+  docstrings reflect PDF-only (no code-path change — try/except already handled it).
+- templates/index.html — NEW "Wazuh / SIEM Source" Settings panel; topbar zone `UTC`→`AZT`.
+- static/script.js — `fmtClock`/`CONSOLE_TZ` renders `Asia/Baku`; `fmtTime` rewritten to parse
+  as a real `Date` and render through `fmtClock` (was: verbatim regex substring, wrong tz);
+  `applyWazuhSourceUI`/`currentWazuhSource`/`testWazuhSettings`; `fillSettings`/
+  `gatherSettings` extended.
+- static/style.css — `[data-view="settings"]` grey cursor override (`--ink-dim`); `.tag-ready`
+  generalized to cover `#wazuhStatusTag` too.
+- red_report.py — `_render_report` PDF-only (raises `RuntimeError`, no HTML branch). NEW
+  `_OWASP_MAP`/`_owasp_ref`/`_owasp_summary_table`; new "Framework Alignment" section.
+- log_ingestor.py — NEW `_mitre_info()` (supersedes `_mitre_ids`) zips Wazuh's
+  `rule.mitre.id`/`tactic`/`technique` arrays into the `[MITRE: ...]` marker.
+- requirements.txt / .env.example — `weasyprint` 60.2→69.0 (old pin broken vs. current pydyf);
+  documents `REDSEE_WAZUH_ALERTS_PATH`.
+- tests/ — NEW `test_console_settings.py` (17), NEW `test_blue_report_deterministic.py` (18,
+  incl. 6 for `_events_table`); `test_red_report_deterministic.py` rewritten (HTML-fallback
+  test → fail-loudly test + OWASP tests).
+- outputs/*.html (8 stray files) — deleted; untracked/gitignored artifacts from before the fix.
+- FROZEN, verified empty diff: `git diff --stat schemas.py engine/ modules/`.
 
 ## Invariants to preserve
 - schemas.py contract frozen · severity strings exact · sandbox + scope gating · auth gating first

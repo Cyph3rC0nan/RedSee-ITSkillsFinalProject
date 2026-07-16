@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedSee — Security Operations Console</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
@@ -27,6 +28,11 @@
           <span class="nav-label">Blue Ops</span>
           <span class="nav-meta">defense</span>
         </button>
+        <button class="nav-item" data-nav="settings">
+          <span class="nav-dot dot-neutral"></span>
+          <span class="nav-label">Settings</span>
+          <span class="nav-meta">config</span>
+        </button>
       </nav>
 
       <div class="rail-foot">
@@ -42,6 +48,7 @@
           <span class="rail-stat-k">SCOPE</span>
           <span class="rail-stat-v">per-op auth</span>
         </div>
+        <a class="btn btn-ghost rail-signout" href="/logout">Sign out</a>
       </div>
     </aside>
 
@@ -54,7 +61,7 @@
         </div>
         <div class="topbar-right">
           <span class="clock" id="clock">--:--:--</span>
-          <span class="clock-zone">UTC</span>
+          <span class="clock-zone" title="Asia/Baku">AZT</span>
         </div>
       </header>
 
@@ -205,8 +212,11 @@
 
             <div class="ingest-row">
               <label class="field wazuh-field">
-                <span class="field-label">Wazuh alerts.json — last N alerts</span>
-                <input type="number" id="alertsLastN" value="300" min="1" max="5000" />
+                <span class="field-label">Wazuh alerts.json — most recent</span>
+                <div class="input-suffix">
+                  <input type="number" id="alertsLastN" value="300" min="1" max="5000" />
+                  <span class="suffix-unit">alerts</span>
+                </div>
               </label>
               <button class="btn btn-cyan" id="alertsBtn">Load alerts.json</button>
             </div>
@@ -215,8 +225,11 @@
 
             <div class="ingest-row">
               <label class="field wazuh-field">
-                <span class="field-label">Wazuh API — last N minutes</span>
-                <input type="number" id="wazuhMinutes" value="30" min="1" max="1440" />
+                <span class="field-label">Wazuh API — look-back window</span>
+                <div class="input-suffix">
+                  <input type="number" id="wazuhMinutes" value="30" min="1" max="1440" />
+                  <span class="suffix-unit">min</span>
+                </div>
               </label>
               <button class="btn btn-cyan-ghost" id="wazuhBtn">Fetch Alerts</button>
             </div>
@@ -255,6 +268,165 @@
 
         </div>
       </section>
+
+      <!-- ═══ SETTINGS ══════════════════════════════════════════ -->
+      <section class="view view-settings" data-view-panel="settings">
+        <div class="grid-settings">
+
+          <!-- LLM engine -->
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>LLM Engine</h2>
+              <span class="panel-tag" id="llmStatusTag">unconfigured</span>
+            </div>
+            <p class="settings-lead">
+              The agent needs an OpenAI-compatible LLM to plan scans. Use an external
+              provider with an API key, or a local model via Ollama — no <span class="mono">.env</span> editing.
+            </p>
+
+            <div class="field">
+              <span class="field-label">Provider</span>
+              <div class="seg-toggle" role="radiogroup" aria-label="LLM provider">
+                <label class="seg-opt"><input type="radio" name="provider" value="external" /><span class="seg-chip">External API</span></label>
+                <label class="seg-opt"><input type="radio" name="provider" value="local" /><span class="seg-chip">Local (Ollama)</span></label>
+              </div>
+            </div>
+
+            <label class="field">
+              <span class="field-label">Base URL</span>
+              <input type="text" id="setBaseUrl" spellcheck="false" autocapitalize="off"
+                     placeholder="https://openrouter.ai/api/v1" />
+            </label>
+
+            <label class="field">
+              <span class="field-label">Model</span>
+              <input type="text" id="setModel" spellcheck="false" autocapitalize="off"
+                     placeholder="anthropic/claude-sonnet-4" />
+            </label>
+
+            <label class="field" id="apiKeyField">
+              <span class="field-label">API key <span class="field-hint" id="apiKeyHint"></span></span>
+              <input type="password" id="setApiKey" autocomplete="off" spellcheck="false"
+                     placeholder="sk-…  (leave blank to keep the current key)" />
+            </label>
+
+            <div class="settings-actions">
+              <button class="btn btn-cyan" id="saveSettingsBtn">Save settings</button>
+              <button class="btn btn-ghost" id="testSettingsBtn">Test connection</button>
+            </div>
+            <p class="form-note" id="settingsNote" role="status" aria-live="polite"></p>
+          </section>
+
+          <!-- Budget + guards -->
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>Budget &amp; Guards</h2>
+              <span class="panel-tag tag-cyan">per scan</span>
+            </div>
+            <p class="settings-lead">Hard limits enforced on every scan. The cost cap stops the agent before it can overspend.</p>
+
+            <label class="field">
+              <span class="field-label">LLM cost cap (USD / scan)</span>
+              <div class="input-suffix">
+                <input type="number" id="setMaxUsd" min="0" step="0.05" placeholder="1.00" />
+                <span class="suffix-unit">$ / scan</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Request timeout</span>
+              <div class="input-suffix">
+                <input type="number" id="setTimeout" min="1" step="1" placeholder="120" />
+                <span class="suffix-unit">sec</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Rate limit</span>
+              <div class="input-suffix">
+                <input type="number" id="setRateLimit" min="1" step="1" placeholder="60" />
+                <span class="suffix-unit">req / min</span>
+              </div>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Max parallel sandboxes</span>
+              <div class="input-suffix">
+                <input type="number" id="setMaxParallel" min="1" max="8" step="1" placeholder="2" />
+                <span class="suffix-unit">containers</span>
+              </div>
+            </label>
+
+            <details class="settings-adv">
+              <summary>Token pricing (for cost tracking)</summary>
+              <label class="field">
+                <span class="field-label">Input price</span>
+                <div class="input-suffix">
+                  <input type="number" id="setPriceIn" min="0" step="0.0001" placeholder="0.0" />
+                  <span class="suffix-unit">$ / 1K tok</span>
+                </div>
+              </label>
+              <label class="field">
+                <span class="field-label">Output price</span>
+                <div class="input-suffix">
+                  <input type="number" id="setPriceOut" min="0" step="0.0001" placeholder="0.0" />
+                  <span class="suffix-unit">$ / 1K tok</span>
+                </div>
+              </label>
+            </details>
+          </section>
+
+          <!-- Wazuh / SIEM source -->
+          <section class="panel settings-panel">
+            <div class="panel-head">
+              <h2>Wazuh / SIEM Source</h2>
+              <span class="panel-tag" id="wazuhStatusTag">unconfigured</span>
+            </div>
+            <p class="settings-lead">
+              Where Blue Ops pulls Wazuh alerts from — a local <span class="mono">alerts.json</span>
+              file, or the live Wazuh REST API — instead of editing <span class="mono">.env</span>.
+            </p>
+
+            <div class="field">
+              <span class="field-label">Source</span>
+              <div class="seg-toggle" role="radiogroup" aria-label="Wazuh source">
+                <label class="seg-opt"><input type="radio" name="wazuh_source" value="file" /><span class="seg-chip">Local file</span></label>
+                <label class="seg-opt"><input type="radio" name="wazuh_source" value="api" /><span class="seg-chip">Live API</span></label>
+              </div>
+            </div>
+
+            <label class="field" id="wazuhPathField">
+              <span class="field-label">alerts.json path</span>
+              <input type="text" id="setWazuhPath" spellcheck="false" autocapitalize="off"
+                     placeholder="/var/ossec/logs/alerts/alerts.json" />
+            </label>
+
+            <label class="field" id="wazuhApiUrlField">
+              <span class="field-label">Wazuh API URL</span>
+              <input type="text" id="setWazuhApiUrl" spellcheck="false" autocapitalize="off"
+                     placeholder="https://wazuh-host:55000" />
+            </label>
+
+            <label class="field" id="wazuhApiUserField">
+              <span class="field-label">Username</span>
+              <input type="text" id="setWazuhApiUser" spellcheck="false" autocapitalize="off"
+                     placeholder="admin" />
+            </label>
+
+            <label class="field" id="wazuhApiPassField">
+              <span class="field-label">Password <span class="field-hint" id="wazuhApiPassHint"></span></span>
+              <input type="password" id="setWazuhApiPass" autocomplete="off" spellcheck="false"
+                     placeholder="leave blank to keep the current password" />
+            </label>
+
+            <div class="settings-actions">
+              <button class="btn btn-ghost" id="testWazuhBtn">Test connection</button>
+            </div>
+            <p class="form-note" id="wazuhSettingsNote" role="status" aria-live="polite"></p>
+          </section>
+
+        </div>
+      </section>
     </main>
 
     <!-- ── Status line (signature) ───────────────────────────── -->
@@ -272,5 +444,6 @@
 
   </div>
   <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <script src="{{ url_for('static', filename='rn-cursor.js') }}"></script>
 </body>
 </html>
