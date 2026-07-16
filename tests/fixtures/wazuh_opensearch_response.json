@@ -1,0 +1,81 @@
+{
+  "took": 12,
+  "timed_out": false,
+  "_shards": { "total": 9, "successful": 9, "skipped": 6, "failed": 0 },
+  "hits": {
+    "total": 3,
+    "max_score": null,
+    "hits": [
+      {
+        "_index": "wazuh-alerts-4.x-2026.07.16",
+        "_id": "aaa111",
+        "_version": 1,
+        "_score": null,
+        "_source": {
+          "predecoder": { "hostname": "demo-web-01", "program_name": "sshd", "timestamp": "Jul 16 05:15:16" },
+          "agent": { "name": "demo-web-01", "id": "000" },
+          "data": { "srcip": "198.51.100.10", "dstuser": "root", "srcport": "41758" },
+          "manager": { "name": "demo-web-01" },
+          "rule": {
+            "level": 5,
+            "description": "sshd: authentication failed.",
+            "groups": ["syslog", "sshd", "authentication_failed"],
+            "id": "5760",
+            "mitre": { "technique": ["Password Guessing"], "id": ["T1110.001"], "tactic": ["Credential Access"] }
+          },
+          "location": "journald",
+          "decoder": { "parent": "sshd", "name": "sshd" },
+          "id": "1784999900.1",
+          "full_log": "Jul 16 05:15:16 demo-web-01 sshd[1234]: Failed password for root from 198.51.100.10 port 41758 ssh2",
+          "timestamp": "2026-07-16T05:15:16.000+0200"
+        }
+      },
+      {
+        "_index": "wazuh-alerts-4.x-2026.07.16",
+        "_id": "bbb222",
+        "_version": 1,
+        "_score": null,
+        "_source": {
+          "agent": { "name": "demo-web-01", "id": "000" },
+          "manager": { "name": "demo-web-01" },
+          "rule": {
+            "level": 6,
+            "description": "SQL injection attempt.",
+            "groups": ["web", "accesslog", "attack", "sqli"],
+            "id": "31164",
+            "mitre": { "technique": ["Exploit Public-Facing Application"], "id": ["T1190"], "tactic": ["Initial Access"] }
+          },
+          "data": { "protocol": "GET", "srcip": "203.0.113.20", "id": "200", "url": "/rest/products/search?q=1' OR '1'='1" },
+          "location": "/var/log/redsees-gateway/access.log",
+          "decoder": { "name": "web-accesslog" },
+          "id": "1784999900.2",
+          "full_log": "203.0.113.20 - - [16/Jul/2026:05:20:00 +0000] \"GET /rest/products/search?q=1' OR '1'='1 HTTP/1.1\" 200 30 \"-\" \"curl/8.5.0\"",
+          "timestamp": "2026-07-16T05:20:00.000+0200"
+        }
+      },
+      {
+        "_index": "wazuh-alerts-4.x-2026.07.16",
+        "_id": "ccc333",
+        "_version": 1,
+        "_score": null,
+        "_source": {
+          "agent": { "name": "demo-web-01", "id": "000" },
+          "manager": { "name": "demo-web-01" },
+          "rule": {
+            "level": 3,
+            "description": "PAM: Login session opened.",
+            "groups": ["pam", "syslog", "authentication_success"],
+            "id": "5501"
+          },
+          "data": { "srcip": "198.51.100.10" },
+          "location": "journald",
+          "decoder": { "name": "pam" },
+          "id": "1784999900.3",
+          "full_log": "Jul 16 05:16:00 demo-web-01 sshd[1234]: pam_unix(sshd:session): session opened for user root",
+          "timestamp": "2026-07-16T05:16:00.000+0200"
+        }
+      }
+    ]
+  },
+  "aggregations": {}
+}

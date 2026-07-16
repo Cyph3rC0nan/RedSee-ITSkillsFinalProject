@@ -25,6 +25,7 @@ from log_ingestor import (
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "wazuh_alerts_sample.jsonl"
+OPENSEARCH_FIXTURE = Path(__file__).parent / "fixtures" / "wazuh_opensearch_response.json"
 
 
 def _events():
@@ -168,6 +169,45 @@ def test_json_array_still_supported():
     assert events[0].source == "Wazuh"
     assert events[0].severity_level == 12
     assert severity_bucket(events[0].severity_level) == "Critical"
+
+
+# ── raw OpenSearch/Elasticsearch `_search` API response shape ───────────
+# What you get querying the Wazuh Indexer directly (Kibana Dev Tools, or
+# curling wazuh-alerts-*/_search) — real alerts live nested at
+# hits.hits[]._source, NOT the flat per-line shape of the on-disk alerts.json.
+# A file in exactly this shape (dumped from a live Wazuh Indexer query) failed
+# to parse at all ("Unrecognized log format") before this fix.
+
+def test_opensearch_search_response_parses():
+    events = ingest_log_file(str(OPENSEARCH_FIXTURE))
+    assert len(events) == 3
+    assert all(e.source == "Wazuh" for e in events)
+
+
+def test_opensearch_response_sqli_alert_mapped_correctly():
+    events = ingest_log_file(str(OPENSEARCH_FIXTURE))
+    sqli = next(e for e in events if e.rule_id == "31164")
+    assert sqli.severity_level == 6
+    assert severity_bucket(sqli.severity_level) == "Medium"
+    assert sqli.src_ip == "203.0.113.20"
+    assert "SQL injection" in sqli.description
+    assert is_web_attack(sqli.rule_id)
+    assert "q=1' OR '1'='1" in sqli.raw_payload
+    assert "T1190" in sqli.raw_payload
+
+
+def test_opensearch_response_non_web_alert_mapped():
+    events = ingest_log_file(str(OPENSEARCH_FIXTURE))
+    ssh = next(e for e in events if e.rule_id == "5760")
+    assert ssh.severity_level == 5
+    assert ssh.src_ip == "198.51.100.10"
+    assert not is_web_attack(ssh.rule_id)
+
+
+def test_opensearch_response_last_n_respected():
+    limited = ingest_log_file(str(OPENSEARCH_FIXTURE), last_n=1)
+    assert len(limited) == 1
+    assert limited[0].rule_id == "5501"          # last hit in the array
 
 
 if __name__ == "__main__":
