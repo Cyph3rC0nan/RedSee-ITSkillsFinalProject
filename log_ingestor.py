@@ -255,6 +255,15 @@ def _read_records(path: Path) -> list:
             val = data.get(key)
             if isinstance(val, list):
                 return val
+        # Raw OpenSearch/Elasticsearch `_search` API response — the shape you get
+        # querying the Wazuh Indexer directly (Kibana Dev Tools, or curling
+        # wazuh-alerts-*/_search), NOT the same shape as the on-disk alerts.json
+        # JSONL. The real alert fields live at hits.hits[]._source; the wrapping
+        # _index/_id/_score envelope is discarded.
+        hits = data.get("hits")
+        if isinstance(hits, dict) and isinstance(hits.get("hits"), list):
+            return [h["_source"] for h in hits["hits"]
+                    if isinstance(h, dict) and isinstance(h.get("_source"), dict)]
         return [data]
     return []
 
